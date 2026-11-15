@@ -1,5 +1,6 @@
 # Backup workflow
-- [ ] Review the HomeSafe mobile changes for local email/profile access, named phones and QR/manual-IP pairing before implementation; applying them requires the HomeSafe project chat, and real enrollment/transfer requires native phone apps and a local Vault service.
+- [x] Review and approve the HomeSafe mobile changes for local email/profile access, named phones and QR/manual-IP pairing before implementation.
+- [ ] Apply the approved HomeSafe changes: blocked on opening the HomeSafe project chat; this project has read-only access to HomeSafe. Real enrollment/transfer also requires native phone apps and a local Vault service.
 - [x] Add profile/type/date filters and storage access, space and unreadable-folder warnings; verify filtering and warning states with a browser folder adapter. External-drive capacity is unavailable in browsers; space warnings respond to actual write-limit errors.
 - [x] Add local-folder browser profile registration and AES-256 identity verification.
 - [x] Add selected-file backups, date naming, duplicate protection and location recovery.
