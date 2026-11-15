@@ -28,3 +28,9 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+## Local backup boundaries
+- Keep browser folder I/O and cryptographic enrollment in `src/lib/local-backup.ts`, invoked only from effects or user actions; the hosted runtime cannot access the owner's USB disk.
+- Persist directory handles and non-exportable device keys in IndexedDB, never cloud storage; this workflow must stay local and handles need explicit browser permission.
+- Treat browser enrollment as browser identity, not phone identity; native phone enrollment and LAN transfer require separate companion software and must never be simulated as verified phone access.
+- Verify AES-GCM profile identity before every write and reject collisions before creating a backup; existing backups must never be overwritten.
