@@ -1,23 +1,165 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
+import { HardDrive, Thermometer, Wifi, ShieldCheck, KeyRound, Smartphone, Tablet, Laptop, History, RotateCcw, CheckCircle2, Loader2, Lock } from "lucide-react";
 
-// The home route ships no og:image, so serve-time hosting can inject the
-// project's social preview (explicit og:image or latest screenshot).
 export const Route = createFileRoute("/")({
+  head: () => ({
+    meta: [
+      { title: "Homesafe Vault — Local Backup Dashboard" },
+      { name: "description", content: "Monitor your local USB backup drive, pair phones with a rotating PIN, and restore snapshots. Zero cloud." },
+      { property: "og:title", content: "Homesafe Vault — Local Backup Dashboard" },
+      { property: "og:description", content: "Privacy-first daemon dashboard for your home backup drive." },
+      { property: "og:type", content: "website" },
+      { name: "twitter:card", content: "summary" },
+    ],
+  }),
   component: Index,
 });
 
-// IMPORTANT: Replace this placeholder. See ./README.md for routing conventions.
+type Device = { id: string; name: string; kind: "phone" | "tablet" | "laptop"; last: string };
+type Snap = { id: string; date: string; size: string; files: number; state: "idle" | "checking" | "valid" | "restoring" | "restored" };
+
+const newPin = () => String(Math.floor(Math.random() * 1e6)).padStart(6, "0");
+const icons = { phone: Smartphone, tablet: Tablet, laptop: Laptop };
+
 function Index() {
+  const [now, setNow] = useState<Date | null>(null);
+  const [pin, setPin] = useState("------");
+  const [left, setLeft] = useState(30);
+  const [temp, setTemp] = useState(38.4);
+  const [mounted, setMounted] = useState(true);
+  const [devices, setDevices] = useState<Device[]>([
+    { id: "1", name: "Vinay's Pixel 8", kind: "phone", last: "2 min ago" },
+    { id: "2", name: "Family iPad", kind: "tablet", last: "1 hr ago" },
+    { id: "3", name: "Asha's iPhone 15", kind: "phone", last: "Yesterday" },
+  ]);
+  const [snaps, setSnaps] = useState<Snap[]>(
+    ["Today 03:00", "Yesterday 03:00", "Nov 13 03:00", "Nov 12 03:00", "Nov 08 03:00"].map((d, i) => ({
+      id: String(i), date: d, size: `${(412 - i * 6.3).toFixed(1)} GB`, files: 184210 - i * 912, state: "idle",
+    })),
+  );
+
+  useEffect(() => {
+    setPin(newPin()); setNow(new Date());
+    const t = setInterval(() => {
+      setNow(new Date());
+      setTemp((x) => Math.min(46, Math.max(34, x + (Math.random() - 0.5) * 0.6)));
+      setLeft((l) => { if (l <= 1) { setPin(newPin()); return 30; } return l - 1; });
+    }, 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  const setSnap = (id: string, state: Snap["state"]) => setSnaps((s) => s.map((x) => (x.id === id ? { ...x, state } : x)));
+  const validate = (id: string) => { setSnap(id, "checking"); setTimeout(() => setSnap(id, "valid"), 1800); };
+  const restore = (id: string) => { setSnap(id, "restoring"); setTimeout(() => setSnap(id, "restored"), 2200); };
+  const tempTone = temp > 44 ? "text-destructive" : temp > 41 ? "text-warning" : "text-primary";
+
   return (
-    <div
-      className="flex min-h-screen items-center justify-center"
-      style={{ backgroundColor: "#fcfbf8" }}
-    >
-      <img
-        data-lovable-blank-page-placeholder="REMOVE_THIS"
-        src="https://cdn.gpteng.co/blank-app-v1.svg"
-        alt="Your app will live here!"
-      />
-    </div>
+    <main className="min-h-screen bg-background p-4 md:p-8">
+      <div className="mx-auto max-w-6xl space-y-6">
+        <header className="flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="grid h-11 w-11 place-items-center rounded-xl bg-accent glow"><Lock className="h-5 w-5 text-primary" /></div>
+            <div>
+              <h1 className="text-xl font-semibold tracking-tight">Homesafe Vault</h1>
+              <p className="text-sm text-muted-foreground">vaultd · raspberrypi.local</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-accent px-3 py-1.5 text-sm font-medium text-primary">
+              <ShieldCheck className="h-4 w-4" /> Zero-cloud
+            </span>
+            <span className="font-mono text-sm text-muted-foreground">{now?.toLocaleTimeString() ?? ""}</span>
+          </div>
+        </header>
+
+        <section className="grid gap-4 md:grid-cols-3">
+          <div className="panel">
+            <div className="flex items-center justify-between text-sm text-muted-foreground"><span>Backup drive</span><HardDrive className="h-4 w-4" /></div>
+            <div className="mt-3 flex items-center gap-2 text-lg font-semibold">
+              <span className={`h-2.5 w-2.5 rounded-full pulse-dot ${mounted ? "bg-primary" : "bg-destructive"}`} />
+              {mounted ? "Mounted" : "Unmounted"}
+            </div>
+            <p className="mt-1 font-mono text-xs text-muted-foreground">/dev/sda1 → /mnt/homesafe · ext4</p>
+            <div className="mt-4 h-2 overflow-hidden rounded-full bg-muted"><div className="h-full w-[62%] rounded-full bg-primary" /></div>
+            <div className="mt-2 flex justify-between text-xs text-muted-foreground"><span>1.24 TB used</span><span>2 TB</span></div>
+            <button onClick={() => setMounted((m) => !m)} className="mt-4 min-h-11 w-full rounded-lg border border-border bg-secondary text-sm font-medium hover:bg-accent">
+              {mounted ? "Safely eject" : "Mount drive"}
+            </button>
+          </div>
+
+          <div className="panel">
+            <div className="flex items-center justify-between text-sm text-muted-foreground"><span>Drive temperature</span><Thermometer className="h-4 w-4" /></div>
+            <div className={`mt-3 font-mono text-4xl font-semibold ${tempTone}`}>{temp.toFixed(1)}°C</div>
+            <p className="mt-1 text-xs text-muted-foreground">SMART healthy · 8,412 power-on hrs</p>
+            <div className="mt-4 flex h-12 items-end gap-1">
+              {Array.from({ length: 24 }).map((_, i) => (
+                <div key={i} className="flex-1 rounded-sm bg-primary/30" style={{ height: `${40 + Math.sin(i / 2) * 25 + (i === 23 ? 20 : 0)}%` }} />
+              ))}
+            </div>
+          </div>
+
+          <div className="panel">
+            <div className="flex items-center justify-between text-sm text-muted-foreground"><span>Local network</span><Wifi className="h-4 w-4" /></div>
+            <div className="mt-3 font-mono text-2xl font-semibold">192.168.1.42</div>
+            <p className="mt-1 font-mono text-xs text-muted-foreground">eth0 · port 8443 · TLS (self-signed)</p>
+            <div className="mt-4 rounded-lg bg-accent p-3 text-xs text-accent-foreground">
+              <div className="flex items-center gap-2 font-medium text-primary"><ShieldCheck className="h-4 w-4" />No outbound connections</div>
+              <p className="mt-1 text-muted-foreground">Data never leaves your home network.</p>
+            </div>
+          </div>
+        </section>
+
+        <section className="grid gap-4 md:grid-cols-5">
+          <div className="panel glow md:col-span-2">
+            <div className="flex items-center gap-2 text-sm text-muted-foreground"><KeyRound className="h-4 w-4" /> Phone pairing PIN</div>
+            <div className="mt-5 flex justify-center gap-2">
+              {pin.split("").map((d, i) => (
+                <span key={i} className="grid h-14 w-11 place-items-center rounded-lg border border-border bg-secondary font-mono text-2xl font-semibold text-primary">{d}</span>
+              ))}
+            </div>
+            <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-muted">
+              <div className="h-full bg-primary transition-all duration-1000 ease-linear" style={{ width: `${(left / 30) * 100}%` }} />
+            </div>
+            <p className="mt-2 text-center text-xs text-muted-foreground">Rotates in {left}s · enter in the HomeSafe app</p>
+          </div>
+
+          <div className="panel md:col-span-3">
+            <div className="flex items-center justify-between">
+              <h2 className="font-semibold">Paired devices</h2>
+              <span className="text-xs text-muted-foreground">{devices.length} active</span>
+            </div>
+            <ul className="mt-3 divide-y divide-border">
+              {devices.map((d) => { const I = icons[d.kind]; return (
+                <li key={d.id} className="flex items-center gap-3 py-3">
+                  <div className="grid h-10 w-10 place-items-center rounded-lg bg-secondary"><I className="h-5 w-5 text-primary" /></div>
+                  <div className="flex-1"><div className="text-sm font-medium">{d.name}</div><div className="text-xs text-muted-foreground">Last seen {d.last}</div></div>
+                  <button onClick={() => setDevices((x) => x.filter((y) => y.id !== d.id))} className="min-h-11 rounded-lg border border-destructive/40 px-4 text-sm text-destructive hover:bg-destructive/10">Revoke</button>
+                </li>); })}
+              {devices.length === 0 && <li className="py-6 text-center text-sm text-muted-foreground">No devices paired. Use the PIN to pair a phone.</li>}
+            </ul>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="flex items-center gap-2"><History className="h-4 w-4 text-primary" /><h2 className="font-semibold">Snapshots</h2></div>
+          <div className="mt-3 divide-y divide-border">
+            {snaps.map((s) => (
+              <div key={s.id} className="flex flex-wrap items-center gap-3 py-3">
+                <div className="min-w-40 flex-1"><div className="text-sm font-medium">{s.date}</div><div className="font-mono text-xs text-muted-foreground">{s.size} · {s.files.toLocaleString()} files</div></div>
+                {s.state === "idle" && <button onClick={() => validate(s.id)} className="min-h-11 rounded-lg bg-secondary px-4 text-sm font-medium hover:bg-accent">Validate &amp; restore</button>}
+                {s.state === "checking" && <span className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Verifying checksums…</span>}
+                {s.state === "valid" && (<>
+                  <span className="flex items-center gap-1 text-sm text-primary"><CheckCircle2 className="h-4 w-4" />Integrity OK</span>
+                  <button onClick={() => restore(s.id)} className="inline-flex min-h-11 items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-foreground hover:opacity-90"><RotateCcw className="h-4 w-4" />Restore</button>
+                </>)}
+                {s.state === "restoring" && <span className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="h-4 w-4 animate-spin" />Restoring…</span>}
+                {s.state === "restored" && <span className="flex items-center gap-1 text-sm text-primary"><CheckCircle2 className="h-4 w-4" />Restored</span>}
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </main>
   );
 }
