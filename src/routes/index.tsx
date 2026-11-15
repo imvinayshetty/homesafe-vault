@@ -9,7 +9,7 @@ export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "Homesafe Vault — Local Backup Dashboard" },
-      { name: "description", content: "Manage local file backups by profile and phone folder. Vault account access and Wi-Fi phone pairing require an installed local service." },
+      { name: "description", content: "Manage local file backups by profile and phone folder. Sign-in is cloud-based with Authy 2FA; backup files stay on local storage." },
       { property: "og:title", content: "Homesafe Vault — Local Backup Dashboard" },
       { property: "og:description", content: "Local file backup workspace with named phone folders, saved-backup filters and storage warnings." },
       { property: "og:type", content: "website" },
@@ -32,6 +32,7 @@ function Index() {
   const [temp, setTemp] = useState(38.4);
   const [mounted, setMounted] = useState(true);
   const [light, setLight] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
   const [showDemo, setShowDemo] = useState(false);
   const [devices, setDevices] = useState<Device[]>([
     { id: "1", name: "Vinay's Pixel 8", kind: "phone", last: "2 min ago" },
@@ -104,14 +105,16 @@ function Index() {
           </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-accent px-3 py-1.5 text-sm font-medium text-primary">
-              <ShieldCheck className="h-4 w-4" /> Local backups · No cloud transfer
+              <ShieldCheck className="h-4 w-4" /> Backups stay local · Cloud sign-in only
             </span>
             <span className="font-mono text-sm text-muted-foreground">{now?.toLocaleTimeString() ?? ""}</span>
           </div>
         </header>
 
-        <VaultAccess />
-        <LocalBackupWorkspace />
+        <VaultAccess onAuthChange={setSignedIn} />
+        {signedIn ? <LocalBackupWorkspace /> : (
+          <p className="border-y border-border py-6 text-sm text-muted-foreground">Sign in with your email and Authy code to open the local backup workspace.</p>
+        )}
 
         <Button variant="outline" onClick={() => setShowDemo(v => !v)}>{showDemo ? "Hide sample monitoring" : "Show sample monitoring"}</Button>
         {showDemo && <>
