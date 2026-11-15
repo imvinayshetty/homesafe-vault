@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FolderOpen, ShieldCheck, FilePlus2, Smartphone, AlertTriangle, Loader2, RefreshCw, FilterX, Plus, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { StorageHealth } from "@/components/storage-health";
 import { backupISODate, filterBackups, scanCatalog, storageIssue, storageWarning, type Catalog, type StorageIssue } from "@/lib/backup-catalog";
 import { ROOT_FOLDER, createBackup, dateCode, defaultBackupName, ensurePermission, hasSameDate, listBackups, loadSetting, localIdentity, registerPhone, safeSegment, saveSetting, verifyProfile, type BackupEntry, type BackupFile, type BackupKind, type Enrollment, type LocalDirectory } from "@/lib/local-backup";
 
@@ -204,10 +205,10 @@ export function LocalBackupWorkspace() {
         </div>
       </div>
       {storageProblem && <div role="alert" className="flex items-start gap-2 border-l-2 border-warning pl-3 text-sm text-warning"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><p>{storageWarning(storageProblem)}</p></div>}
-      {enrollment && <p className="text-xs text-muted-foreground">Available drive space cannot be measured in this browser. Check free space on the selected drive before backing up; a failed write will show a space warning.</p>}
       {error && <p role="alert" className="border-l-2 border-destructive pl-3 text-sm text-destructive">{error}</p>}
       {message && <p role="status" className="break-words text-sm text-primary">{message}</p>}
       {busy && <p role="status" className="text-sm text-muted-foreground">Accessing local storage… Keep this page open.</p>}
+      <StorageHealth catalog={catalog} connected={Boolean(enrollment)} problem={storageProblem} />
       <details className="border-t border-border pt-4 text-sm" open>
         <summary className="cursor-pointer font-medium">What Android &amp; iPhone can back up</summary>
         <dl className="mt-3 grid gap-4 sm:grid-cols-2">

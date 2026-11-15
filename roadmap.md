@@ -1,4 +1,6 @@
 # Backup workflow
+- [x] Add storage health panel with completed-backup payload trends, totals and actual write-limit alerts; verified 43 tests, real browser-file readback and mobile layout.
+- [ ] Available drive space and proactive nearing-capacity alerts: blocked on an installed local Vault service able to measure the selected drive; browser estimates are not drive capacity.
 - [x] Update Vault with service-dependent account/access screens, destination confirmation, named-phone folders, legacy-safe catalog browsing and truthful unavailable pairing states. Verified 39 tests and actual browser-managed file write/readback, duplicate rejection and mobile/desktop layout; USB permissions remain a manual check.
 - [ ] Real Vault registration/Authy login, phone pairing and revocation enforcement: requires an installed local Vault service and native phone companions, absent from this project.
 - [x] Review and approve the HomeSafe mobile changes for local email/profile access, named phones and QR/manual-IP pairing before implementation.
