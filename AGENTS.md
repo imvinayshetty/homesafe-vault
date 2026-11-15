@@ -34,3 +34,5 @@ use the editor.
 - Persist directory handles and non-exportable device keys in IndexedDB, never cloud storage; this workflow must stay local and handles need explicit browser permission.
 - Treat browser enrollment as browser identity, not phone identity; native phone enrollment and LAN transfer require separate companion software and must never be simulated as verified phone access.
 - Verify AES-GCM profile identity before every write and reject collisions before creating a backup; existing backups must never be overwritten.
+- Scan user-authorized storage metadata through `src/lib/backup-catalog.ts` for cross-profile filtering, without granting writes to other profiles; report unreadable records rather than silently hiding them.
+- Never use browser-origin storage estimates as external-drive capacity; space warnings require a real write-limit error until a local companion can report disk space.

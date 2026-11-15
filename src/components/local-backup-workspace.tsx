@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { FolderOpen, ShieldCheck, FilePlus2, Smartphone, AlertTriangle, Loader2 } from "lucide-react";
+import { FolderOpen, ShieldCheck, FilePlus2, Smartphone, AlertTriangle, Loader2, RefreshCw, FilterX } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { backupISODate, filterBackups, scanCatalog, storageIssue, storageWarning, type Catalog, type StorageIssue } from "@/lib/backup-catalog";
 import { ROOT_FOLDER, createBackup, dateCode, defaultBackupName, ensurePermission, hasSameDate, listBackups, loadSetting, localIdentity, registerProfile, safeSegment, saveSetting, verifyProfile, type BackupEntry, type BackupFile, type BackupKind, type Enrollment, type LocalDirectory } from "@/lib/local-backup";
 
 type DirectoryWindow = Window & { showDirectoryPicker?: (options: { mode: "readwrite"; id: string }) => Promise<LocalDirectory> };
@@ -19,6 +20,13 @@ export function LocalBackupWorkspace() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [catalog, setCatalog] = useState<Catalog>({ entries: [], profiles: [], warnings: [] });
+  const [filterProfile, setFilterProfile] = useState("");
+  const [filterKind, setFilterKind] = useState("");
+  const [filterDate, setFilterDate] = useState("");
+  const [storageProblem, setStorageProblem] = useState<StorageIssue | null>(null);
+  const [checkingStorage, setCheckingStorage] = useState(false);
+  const scanVersion = useRef(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
 
@@ -31,19 +39,56 @@ export function LocalBackupWorkspace() {
     void loadSetting<Enrollment>("enrollment").then(async previous => {
       if (!previous || !active) return;
       setSaved(previous); setProfile(previous.profile);
-      if (await previous.root.queryPermission({ mode: "readwrite" }) !== "granted") return;
+      if (await previous.root.queryPermission({ mode: "readwrite" }) !== "granted") { setStorageProblem("permission"); return; }
       const folder = await verifyProfile(previous);
       const backups = await listBackups(folder);
       if (active) { setEnrollment(previous); setEntries(backups); }
-    }).catch(e => { if (active) setError(e instanceof Error ? e.message : "Saved location could not be opened. Locate HomeSafeBckup to reconnect."); });
+    }).catch(e => { if (active) { setStorageProblem(storageIssue(e)); setError(e instanceof Error ? e.message : "Saved location could not be opened. Locate HomeSafeBckup to reconnect."); } });
     return () => { active = false; };
   }, []);
+
+  useEffect(() => {
+    if (!enrollment) return;
+    let active = true;
+    async function check() {
+      if (!enrollment) return;
+      const version = ++scanVersion.current;
+      try {
+        const next = await scanCatalog(enrollment.root);
+        if (active && version === scanVersion.current) { setCatalog(next); setStorageProblem(problem => problem === "space" ? problem : null); }
+      } catch (e) {
+        if (active && version === scanVersion.current) { setStorageProblem(storageIssue(e)); setCatalog({ entries: [], profiles: [], warnings: [] }); }
+      }
+    }
+    void check();
+    const timer = setInterval(() => { if (!busy) void check(); }, 15000);
+    const onFocus = () => { if (!busy) void check(); };
+    window.addEventListener("focus", onFocus);
+    return () => { active = false; scanVersion.current++; clearInterval(timer); window.removeEventListener("focus", onFocus); };
+  }, [enrollment, busy]);
+
+  async function refreshStorage() {
+    if (!enrollment) return;
+    setCheckingStorage(true);
+    const version = ++scanVersion.current;
+    try {
+      await ensurePermission(enrollment.root);
+      const next = await scanCatalog(enrollment.root);
+      if (version === scanVersion.current) { setCatalog(next); setStorageProblem(problem => problem === "space" ? problem : null); }
+    } catch (e) {
+      if (version === scanVersion.current) { setStorageProblem(storageIssue(e)); setCatalog({ entries: [], profiles: [], warnings: [] }); }
+    } finally { setCheckingStorage(false); }
+  }
 
   async function action(work: () => Promise<void>) {
     setBusy(true); setError(""); setMessage("");
     try { await work(); }
     catch (e) {
-      if (!(e instanceof DOMException && e.name === "AbortError")) setError(e instanceof Error ? e.message : "The storage operation could not be completed.");
+      if (!(e instanceof DOMException && e.name === "AbortError")) {
+        const issue = storageIssue(e);
+        if (issue !== "unreadable") setStorageProblem(issue);
+        setError(e instanceof Error ? e.message : "The storage operation could not be completed.");
+      }
     } finally { setBusy(false); }
   }
   async function connect(create: boolean, reuse = false) {
@@ -62,7 +107,7 @@ export function LocalBackupWorkspace() {
       const folder = await verifyProfile(next);
       const backups = await listBackups(folder);
       await saveSetting("enrollment", next);
-      setEnrollment(next); setSaved(next); setEntries(backups); setFiles([]);
+      setEnrollment(next); setSaved(next); setEntries(backups); setFiles([]); setStorageProblem(null); setFilterProfile("");
       setMessage(create ? "Local browser profile created. Identity encrypted with AES-256-GCM." : "Profile and encrypted device identity matched. Storage reconnected.");
     });
   }
@@ -81,12 +126,14 @@ export function LocalBackupWorkspace() {
       await ensurePermission(enrollment.root);
       const result = await createBackup(enrollment, kind, name, files, date, name !== defaultBackupName(kind, date));
       setEntries(await listBackups(await verifyProfile(enrollment)));
+      setCatalog(await scanCatalog(enrollment.root)); setStorageProblem(null);
       setMessage(`${result.files} files saved in ${ROOT_FOLDER}/${enrollment.profile}/${result.name}.`);
       setFiles([]);
     });
   }
   const duplicate = today && hasSameDate(entries, today);
-  const locked = busy || !enrollment;
+  const locked = busy || checkingStorage || !enrollment || storageProblem === "disconnected" || storageProblem === "permission" || storageProblem === "unreadable";
+  const filtered = filterBackups(catalog.entries, { profile: filterProfile, kind: filterKind, date: filterDate });
   const changeKind = (next: BackupKind) => { setKind(next); if (today) setName(defaultBackupName(next, today)); setFiles([]); };
 
   return (
@@ -103,7 +150,7 @@ export function LocalBackupWorkspace() {
         <div className="space-y-4">
           <div className="flex items-center gap-2 font-medium"><Smartphone className="h-4 w-4 text-primary" />Profile &amp; storage</div>
           <label className="block text-sm">Profile name
-            <input value={profile} onChange={e => { setProfile(e.target.value); setEnrollment(null); setEntries([]); setFiles([]); }} disabled={busy} placeholder="Your profile name" className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3 outline-none focus:ring-2 focus:ring-ring" />
+            <input value={profile} onChange={e => { setProfile(e.target.value); setEnrollment(null); setEntries([]); setFiles([]); setCatalog({ entries: [], profiles: [], warnings: [] }); setStorageProblem(null); }} disabled={busy} placeholder="Your profile name" className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3 outline-none focus:ring-2 focus:ring-ring" />
           </label>
           <label className="flex items-start gap-2 text-sm text-muted-foreground">
             <input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} className="mt-1 accent-primary" />
@@ -139,6 +186,8 @@ export function LocalBackupWorkspace() {
           <Button disabled={locked || !files.length} className="min-h-11" onClick={() => void backup()}>{busy ? <Loader2 className="animate-spin" /> : <ShieldCheck />}Verify identity &amp; save files</Button>
         </div>
       </div>
+      {storageProblem && <div role="alert" className="flex items-start gap-2 border-l-2 border-warning pl-3 text-sm text-warning"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><p>{storageWarning(storageProblem)}</p></div>}
+      {enrollment && <p className="text-xs text-muted-foreground">Available drive space cannot be measured in this browser. Check free space on the selected drive before backing up; a failed write will show a space warning.</p>}
       {error && <p role="alert" className="border-l-2 border-destructive pl-3 text-sm text-destructive">{error}</p>}
       {message && <p role="status" className="break-words text-sm text-primary">{message}</p>}
       {busy && <p role="status" className="text-sm text-muted-foreground">Accessing local storage… Keep this page open.</p>}
@@ -149,7 +198,17 @@ export function LocalBackupWorkspace() {
           <div><dt className="font-medium text-warning">Not included</dt><dd className="mt-1 text-muted-foreground">Other apps’ private data, passwords, protected messages, operating-system files and a complete phone recovery image. Contacts and calendars need separate permissions and export support; they are not backed up by this page.</dd></div>
         </dl>
       </details>
-      {enrollment && <div className="border-t border-border pt-4"><h3 className="font-medium">Backups on this profile</h3>{entries.length === 0 ? <p className="mt-2 text-sm text-muted-foreground">No backups saved yet.</p> : <ul className="mt-2 divide-y divide-border">{entries.map(entry => <li key={entry.name} className="flex flex-wrap justify-between gap-2 py-3 text-sm"><span className="break-all font-mono">{entry.name}</span><span className={entry.complete ? "text-muted-foreground" : "text-warning"}>{entry.files} files · {entry.complete ? "Saved" : "Incomplete"}</span></li>)}</ul>}</div>}
+      {enrollment && <div className="space-y-4 border-t border-border pt-4">
+        <div className="flex flex-wrap items-center justify-between gap-3"><h3 className="font-medium">Saved backups</h3><Button variant="outline" className="min-h-11" disabled={busy || checkingStorage} onClick={() => void refreshStorage()}>{checkingStorage ? <Loader2 className="animate-spin" /> : <RefreshCw />}Check storage</Button></div>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <label className="text-sm">Filter profile<select aria-label="Filter profile" value={filterProfile} onChange={e => setFilterProfile(e.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3"><option value="">All profiles</option>{catalog.profiles.map(p => <option key={p} value={p}>{p}</option>)}</select></label>
+          <label className="text-sm">Filter backup type<select aria-label="Filter backup type" value={filterKind} onChange={e => setFilterKind(e.target.value)} className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3"><option value="">All types</option><option value="Full">Full backup</option><option value="Custom">Custom backup</option></select></label>
+          <label className="text-sm">Filter backup date<input aria-label="Filter backup date" type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} className="mt-2 min-h-11 w-full min-w-0 rounded-md border border-input bg-background px-3" /></label>
+        </div>
+        <div className="flex items-center justify-between gap-3"><p role="status" className="text-xs text-muted-foreground">{filtered.length} of {catalog.entries.length} backups</p><Button variant="ghost" disabled={!filterProfile && !filterKind && !filterDate} onClick={() => { setFilterProfile(""); setFilterKind(""); setFilterDate(""); }}><FilterX />Clear filters</Button></div>
+        {catalog.warnings.length > 0 && <ul role="alert" className="space-y-2 border-l-2 border-warning pl-3 text-sm text-warning">{catalog.warnings.map(w => <li key={w} className="break-words">{w}</li>)}</ul>}
+        {filtered.length === 0 ? <p className="text-sm text-muted-foreground">{storageProblem && storageProblem !== "space" ? "Backups are unavailable until storage access is restored." : catalog.entries.length ? "No backups match these filters." : "No readable backups found on this storage."}</p> : <ul aria-label="Saved backup results" className="divide-y divide-border">{filtered.map(entry => <li key={`${entry.profile}/${entry.name}`} className="flex flex-wrap justify-between gap-2 py-3 text-sm"><div className="min-w-0"><p className="break-all font-mono">{entry.name}</p><p className="mt-1 text-xs text-muted-foreground">{entry.profile} · {entry.kind} · {backupISODate(entry.date)}</p></div><span className={entry.complete ? "text-muted-foreground" : "text-warning"}>{entry.files} files · {entry.complete ? "Saved" : "Incomplete"}</span></li>)}</ul>}
+      </div>}
     </section>
   );
 }

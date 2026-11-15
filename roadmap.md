@@ -1,4 +1,5 @@
 # Backup workflow
+- [x] Add profile/type/date filters and storage access, space and unreadable-folder warnings; verify filtering and warning states with a browser folder adapter. External-drive capacity is unavailable in browsers; space warnings respond to actual write-limit errors.
 - [x] Add local-folder browser profile registration and AES-256 identity verification.
 - [x] Add selected-file backups, date naming, duplicate protection and location recovery.
 - [x] Show Android/iPhone limitations and distinguish browser identity from native phone enrollment.

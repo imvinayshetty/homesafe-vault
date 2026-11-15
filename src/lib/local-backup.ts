@@ -161,7 +161,7 @@ export async function createBackup(enrollment: Enrollment, kind: BackupKind, nam
     return manifest;
   } catch (error) {
     try { await folder.removeEntry(targetName, { recursive: true }); }
-    catch { throw new Error("Backup interrupted. An incomplete folder remains; remove or rename it before trying again."); }
+    catch { throw new Error("Backup interrupted. An incomplete folder remains; remove or rename it before trying again.", { cause: error }); }
     throw error;
   }
 }
