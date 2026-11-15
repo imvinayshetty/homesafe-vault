@@ -36,3 +36,5 @@ use the editor.
 - Verify AES-GCM profile identity before every write and reject collisions before creating a backup; existing backups must never be overwritten.
 - Scan user-authorized storage metadata through `src/lib/backup-catalog.ts` for cross-profile filtering, without granting writes to other profiles; report unreadable records rather than silently hiding them.
 - Never use browser-origin storage estimates as external-drive capacity; space warnings require a real write-limit error until a local companion can report disk space.
+- New browser-file backups require a named phone destination and bind AES-GCM identity to profile/phone; retain legacy profile-level records read-only to avoid implicit migration or overwrite.
+- Vault account and pairing screens remain unavailable without the local service; never store TOTP secrets in browser settings or manufacture a successful login, pairing QR, or phone revocation.

@@ -1,6 +1,7 @@
 import { webcrypto } from "node:crypto";
+import { File as NodeFile } from "node:buffer";
 import { beforeAll, describe, expect, it } from "vitest";
-import { ROOT_FOLDER, createBackup, dateCode, defaultBackupName, encryptIdentity, hasSameDate, registerProfile, requireUniqueName, safeSegment, validateBackupName, verifyEnvelope, verifyProfile, type BackupEntry, type Identity, type LocalDirectory } from "@/lib/local-backup";
+import { ROOT_FOLDER, createBackup, dateCode, defaultBackupName, encryptIdentity, hasSameDate, registerProfile, registerPhone, requireUniqueName, safeSegment, validateBackupName, verifyEnvelope, verifyProfile, type BackupEntry, type Identity, type LocalDirectory, type LocalFileHandle } from "@/lib/local-backup";
 
 beforeAll(() => { Object.defineProperty(globalThis, "crypto", { value: webcrypto, configurable: true }); });
 async function identity(): Promise<Identity> {
@@ -51,6 +52,66 @@ describe("Local backup rules", () => {
   it("rejects backup before writes when the profile cannot be verified", async () => {
     let writes = 0;
     const root = missingProfileRoot(() => { writes++; });
-    await expect(createBackup({ root, profile: "Vinay", identity: await identity() }, "Full", entry.name, [{ file: new File(["photo"], "photo.jpg"), path: "photo.jpg" }], day, false)).rejects.toThrow("No matching profile"); expect(writes).toBe(0);
+    await expect(createBackup({ root, profile: "Vinay", phone: "Pixel", identity: await identity() }, "Full", entry.name, [{ file: new File(["photo"], "photo.jpg"), path: "photo.jpg" }], day, false)).rejects.toThrow("No matching profile"); expect(writes).toBe(0);
+  });
+});
+
+function memoryFolder(name: string): LocalDirectory {
+  const children = new Map<string, LocalDirectory | LocalFileHandle>();
+  return {
+    kind: "directory", name, async *values() { yield* children.values(); },
+    queryPermission: async () => "granted", requestPermission: async () => "granted",
+    async getDirectoryHandle(n, options) {
+      const found = children.get(n);
+      if (found?.kind === "directory") return found;
+      if (found || !options?.create) throw new DOMException("Missing", "NotFoundError");
+      const child = memoryFolder(n); children.set(n, child); return child;
+    },
+    async getFileHandle(n, options) {
+      const found = children.get(n);
+      if (found?.kind === "file") return found;
+      if (found || !options?.create) throw new DOMException("Missing", "NotFoundError");
+      let data: Blob | string = "";
+      const child: LocalFileHandle = { kind: "file", name: n, getFile: async () => new NodeFile([data as string], n) as unknown as File, createWritable: async () => ({ write: async value => { data = typeof value === "string" ? value : await value.text(); }, close: async () => {} }) };
+      children.set(n, child); return child;
+    },
+    async removeEntry(n) { children.delete(n); },
+  };
+}
+describe("Named phone destinations", () => {
+  it("writes only under HomeSafeBckup/profile/phone and reads the actual file back", async () => {
+    const root = memoryFolder(ROOT_FOLDER), device = await identity();
+    await registerPhone(root, "Vinay", "Pixel", device);
+    const enrollment = { root, profile: "Vinay", phone: "Pixel", identity: device };
+    await createBackup(enrollment, "Full", entry.name, [{ file: new NodeFile(["real photo"], "photo.jpg") as unknown as File, path: "photo.jpg" }], day, false);
+    const phone = await (await root.getDirectoryHandle("Vinay")).getDirectoryHandle("Pixel");
+    expect(await (await (await (await phone.getDirectoryHandle("Full_Bckup_151126")).getFileHandle("photo.jpg")).getFile()).text()).toBe("real photo");
+    await expect((await root.getDirectoryHandle("Vinay")).getDirectoryHandle(entry.name)).rejects.toThrow();
+  });
+  it("rejects duplicate phone names case-insensitively without replacing identity", async () => {
+    const root = memoryFolder(ROOT_FOLDER), device = await identity();
+    await registerPhone(root, "Vinay", "My Pixel", device);
+    await expect(registerPhone(root, "Vinay", "my pixel", await identity())).rejects.toThrow("already exists");
+    await expect(verifyProfile({ root, profile: "Vinay", phone: "My Pixel", identity: device })).resolves.toBeDefined();
+  });
+  it("binds identity to both profile and phone name", async () => {
+    const device = await identity();
+    const encrypted = await encryptIdentity(device, "Vinay/Pixel");
+    await expect(verifyEnvelope(encrypted, device, "Vinay/iPhone")).rejects.toThrow();
+    await expect(verifyEnvelope(encrypted, device, "Asha/Pixel")).rejects.toThrow();
+  });
+  it("allows multiple distinct phones within one profile", async () => {
+    const root = memoryFolder(ROOT_FOLDER), device = await identity();
+    await registerPhone(root, "Vinay", "Pixel", device);
+    await registerPhone(root, "Vinay", "iPhone", device);
+    const names = [];
+    for await (const child of (await root.getDirectoryHandle("Vinay")).values()) names.push(child.name);
+    expect(names).toEqual(["Pixel", "iPhone"]);
+  });
+  it("keeps legacy profile backups untouched and blocks new writes there", async () => {
+    const root = memoryFolder(ROOT_FOLDER), device = await identity();
+    await registerProfile(root, "Vinay", device);
+    await expect(createBackup({ root, profile: "Vinay", identity: device }, "Full", entry.name, [{ file: new File(["x"], "x"), path: "x" }], day, false)).rejects.toThrow("named phone");
+    await expect(verifyProfile({ root, profile: "Vinay", identity: device })).resolves.toBeDefined();
   });
 });

@@ -18,6 +18,17 @@ function directory(name: string, children: LocalDirectory[] = [], record?: unkno
   };
 }
 describe("Saved backup filters", () => {
+  it("filters named phones without including legacy profile-level records", () => {
+    const pixel = { ...full, phone: "Pixel" };
+    expect(filterBackups([full, pixel, { ...full, phone: "iPhone" }], { profile: "Vinay", phone: "Pixel", kind: "", date: "" })).toEqual([pixel]);
+  });
+  it("reads new phone folders and legacy snapshots without moving either", async () => {
+    const root = directory("HomeSafeBckup", [directory("Vinay", [directory(full.name, [], full), directory("Pixel", [directory(full.name, [], full)])])]);
+    const result = await scanCatalog(root);
+    expect(result.entries).toHaveLength(2);
+    expect(result.entries.map(e => e.phone)).toEqual([undefined, "Pixel"]);
+    expect(result.warnings).toEqual([]);
+  });
   it("filters by profile", () => { expect(filterBackups(rows, { profile: "Asha", kind: "", date: "" })).toEqual([custom]); });
   it("filters by backup type", () => { expect(filterBackups(rows, { profile: "", kind: "Full", date: "" })).toEqual([full]); });
   it("filters by exact calendar date", () => { expect(filterBackups(rows, { profile: "", kind: "", date: "2026-11-15" })).toEqual([full]); });

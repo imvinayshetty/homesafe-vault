@@ -11,7 +11,7 @@ export interface LocalDirectory {
   removeEntry(name: string, options?: { recursive?: boolean }): Promise<void>;
 }
 export interface Identity { deviceId: string; key: CryptoKey }
-export interface Enrollment { profile: string; identity: Identity; root: LocalDirectory }
+export interface Enrollment { profile: string; phone?: string; identity: Identity; root: LocalDirectory }
 interface Envelope { version: 1; algorithm: "AES-256-GCM"; iv: number[]; ciphertext: number[] }
 export interface BackupEntry { name: string; date: string; kind: BackupKind; files: number; bytes: number; complete: boolean }
 export interface BackupFile { file: File; path: string }
@@ -105,17 +105,41 @@ export async function registerProfile(root: LocalDirectory, profile: string, ide
   const folder = await root.getDirectoryHandle(profile, { create: true });
   await writeJSON(folder, ".homesafe-identity.json", await encryptIdentity(identity, profile));
 }
+export async function registerPhone(root: LocalDirectory, profile: string, phone: string, identity: Identity): Promise<void> {
+  if (root.name !== ROOT_FOLDER) throw new Error(`Choose the ${ROOT_FOLDER} folder.`);
+  const cleanProfile = safeSegment(profile);
+  const cleanPhone = safeSegment(phone);
+  if (/^(Full|Custom)_Bckup_/i.test(cleanPhone)) throw new Error("Choose a memorable phone name, not a dated backup name.");
+  await ensurePermission(root);
+  // Find case-insensitive matches before creating anything, including file collisions.
+  let existing: LocalDirectory | LocalFileHandle | undefined;
+  for await (const entry of root.values()) {
+    if (entry.name.toLowerCase() === cleanProfile.toLowerCase()) existing = entry;
+  }
+  if (existing && (existing.kind !== "directory" || existing.name !== cleanProfile)) throw new Error("That profile name already exists with different spelling or is not a folder. Use its exact name.");
+  const folder = existing?.kind === "directory" ? existing : await root.getDirectoryHandle(cleanProfile, { create: true });
+  for await (const entry of folder.values()) {
+    if (entry.name.toLowerCase() === cleanPhone.toLowerCase()) throw new Error("That phone name already exists in this profile. Reconnect it or choose a different memorable name; its identity will not be replaced.");
+  }
+  const destination = await folder.getDirectoryHandle(cleanPhone, { create: true });
+  await writeJSON(destination, ".homesafe-identity.json", await encryptIdentity(identity, `${cleanProfile}/${cleanPhone}`));
+}
 export async function verifyProfile(enrollment: Enrollment): Promise<LocalDirectory> {
-  const { root, profile, identity } = enrollment;
+  const { root, profile, phone, identity } = enrollment;
   if (root.name !== ROOT_FOLDER) throw new Error(`Choose the ${ROOT_FOLDER} folder, not a profile or dated backup folder.`);
   safeSegment(profile);
   let folder: LocalDirectory;
   try { folder = await root.getDirectoryHandle(profile); }
   catch { throw new Error(`No matching profile folder named “${profile}” was found. Check the selected storage and profile name.`); }
+  if (phone) {
+    safeSegment(phone);
+    try { folder = await folder.getDirectoryHandle(phone); }
+    catch { throw new Error(`No matching phone folder named “${phone}” was found in “${profile}”. No backup was written.`); }
+  }
   let encrypted: unknown;
   try { encrypted = JSON.parse(await (await (await folder.getFileHandle(".homesafe-identity.json")).getFile()).text()); }
   catch { throw new Error("This profile has no readable encrypted identity. No backup was written."); }
-  await verifyEnvelope(encrypted, identity, profile);
+  await verifyEnvelope(encrypted, identity, phone ? `${profile}/${phone}` : profile);
   return folder;
 }
 export async function listBackups(folder: LocalDirectory): Promise<BackupEntry[]> {
@@ -130,6 +154,7 @@ export async function listBackups(folder: LocalDirectory): Promise<BackupEntry[]
   return entries.sort((a, b) => b.name.localeCompare(a.name));
 }
 export async function createBackup(enrollment: Enrollment, kind: BackupKind, name: string, files: BackupFile[], date: Date, renamed: boolean): Promise<BackupEntry> {
+  if (!enrollment.phone) throw new Error("Choose a named phone folder before saving. Existing profile-level backups remain unchanged.");
   if (!files.length) throw new Error("Select at least one accessible file to back up.");
   const targetName = validateBackupName(name, kind, date);
   const paths = files.map(({ path }) => path.split("/").map(safeSegment));

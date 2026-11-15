@@ -1,15 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { LocalBackupWorkspace } from "@/components/local-backup-workspace";
+import { VaultAccess } from "@/components/vault-access";
+import { Button } from "@/components/ui/button";
 import { HardDrive, Thermometer, Wifi, ShieldCheck, KeyRound, Smartphone, Tablet, Laptop, History, RotateCcw, CheckCircle2, Loader2, Lock, Sun, Moon } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
     meta: [
       { title: "Homesafe Vault — Local Backup Dashboard" },
-      { name: "description", content: "Monitor your local USB backup drive, pair phones with a rotating PIN, and restore snapshots. Zero cloud." },
+      { name: "description", content: "Manage local file backups by profile and phone folder. Vault account access and Wi-Fi phone pairing require an installed local service." },
       { property: "og:title", content: "Homesafe Vault — Local Backup Dashboard" },
-      { property: "og:description", content: "Privacy-first daemon dashboard for your home backup drive." },
+      { property: "og:description", content: "Local file backup workspace with named phone folders, saved-backup filters and storage warnings." },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary" },
     ],
@@ -30,6 +32,7 @@ function Index() {
   const [temp, setTemp] = useState(38.4);
   const [mounted, setMounted] = useState(true);
   const [light, setLight] = useState(false);
+  const [showDemo, setShowDemo] = useState(false);
   const [devices, setDevices] = useState<Device[]>([
     { id: "1", name: "Vinay's Pixel 8", kind: "phone", last: "2 min ago" },
     { id: "2", name: "Family iPad", kind: "tablet", last: "1 hr ago" },
@@ -89,7 +92,7 @@ function Index() {
             </div>
           </div>
           <div className="order-first flex w-full justify-center md:order-none md:w-auto md:flex-1">
-            <button
+            <Button
               type="button"
               onClick={toggleTone}
               aria-label={light ? "Switch to dark mode" : "Switch to sage mode"}
@@ -97,18 +100,21 @@ function Index() {
             >
               {light ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
               <span className="toggle-text">{light ? "Dark" : "Sage"}</span>
-            </button>
+            </Button>
           </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-accent px-3 py-1.5 text-sm font-medium text-primary">
-              <ShieldCheck className="h-4 w-4" /> 100% Local · No Internet Used
+              <ShieldCheck className="h-4 w-4" /> Local backups · No cloud transfer
             </span>
             <span className="font-mono text-sm text-muted-foreground">{now?.toLocaleTimeString() ?? ""}</span>
           </div>
         </header>
 
+        <VaultAccess />
         <LocalBackupWorkspace />
 
+        <Button variant="outline" onClick={() => setShowDemo(v => !v)}>{showDemo ? "Hide sample monitoring" : "Show sample monitoring"}</Button>
+        {showDemo && <>
         <p className="text-xs text-warning">Sample vault monitoring below · drive, pairing, trusted devices and restore actions are demonstrations, not connected hardware.</p>
         <section className="grid gap-4 md:grid-cols-3">
           <div className="panel">
@@ -196,6 +202,7 @@ function Index() {
             ))}
           </div>
         </section>
+        </>}
       </div>
     </main>
   );

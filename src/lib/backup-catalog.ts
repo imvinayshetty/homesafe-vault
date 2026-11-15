@@ -1,8 +1,8 @@
 import { type BackupEntry, type LocalDirectory } from "./local-backup";
 
-export interface CatalogEntry extends BackupEntry { profile: string }
+export interface CatalogEntry extends BackupEntry { profile: string; phone?: string }
 export interface Catalog { entries: CatalogEntry[]; profiles: string[]; warnings: string[] }
-export interface BackupFilters { profile: string; kind: string; date: string }
+export interface BackupFilters { profile: string; phone?: string; kind: string; date: string }
 export type StorageIssue = "disconnected" | "permission" | "space" | "unreadable";
 
 export function storageIssue(error: unknown): StorageIssue {
@@ -31,7 +31,7 @@ export function backupISODate(code: string): string {
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 export function filterBackups(entries: CatalogEntry[], filters: BackupFilters): CatalogEntry[] {
-  return entries.filter(e => (!filters.profile || e.profile === filters.profile) && (!filters.kind || e.kind === filters.kind) && (!filters.date || backupISODate(e.date) === filters.date));
+  return entries.filter(e => (!filters.profile || e.profile === filters.profile) && (!filters.phone || e.phone === filters.phone) && (!filters.kind || e.kind === filters.kind) && (!filters.date || backupISODate(e.date) === filters.date));
 }
 export function validManifest(value: unknown): value is BackupEntry {
   if (!value || typeof value !== "object") return false;
@@ -41,19 +41,32 @@ export function validManifest(value: unknown): value is BackupEntry {
 export async function scanCatalog(root: LocalDirectory): Promise<Catalog> {
   if (await root.queryPermission({ mode: "readwrite" }) !== "granted") throw new DOMException("Folder permission required", "NotAllowedError");
   const result: Catalog = { entries: [], profiles: [], warnings: [] };
+  async function readBackup(backup: LocalDirectory, profile: string, phone?: string) {
+    const path = [profile, phone, backup.name].filter(Boolean).join("/");
+    try {
+      const manifest: unknown = JSON.parse(await (await (await backup.getFileHandle(".homesafe-backup.json")).getFile()).text());
+      if (!validManifest(manifest)) throw new Error("Invalid backup record");
+      result.entries.push({ ...manifest, name: backup.name, profile, ...(phone ? { phone } : {}) });
+    } catch (error) {
+      if (["space", "permission"].includes(storageIssue(error))) throw error;
+      result.warnings.push(`Unreadable backup folder: ${path}. Its backup record is missing, damaged or inaccessible; it is excluded from results.`);
+    }
+  }
   for await (const profile of root.values()) {
     if (profile.kind !== "directory") continue;
     result.profiles.push(profile.name);
     try {
-      for await (const backup of profile.values()) {
-        if (backup.kind !== "directory") continue;
+      for await (const child of profile.values()) {
+        if (child.kind !== "directory") continue;
+        // Legacy snapshots remain readable, never moved or renamed automatically.
+        if (/^(Full|Custom)_Bckup_/i.test(child.name)) { await readBackup(child, profile.name); continue; }
         try {
-          const manifest: unknown = JSON.parse(await (await (await backup.getFileHandle(".homesafe-backup.json")).getFile()).text());
-          if (!validManifest(manifest)) throw new Error("Invalid backup record");
-          result.entries.push({ ...manifest, name: backup.name, profile: profile.name });
+          for await (const backup of child.values()) {
+            if (backup.kind === "directory") await readBackup(backup, profile.name, child.name);
+          }
         } catch (error) {
           if (storageIssue(error) === "space" || storageIssue(error) === "permission") throw error;
-          result.warnings.push(`Unreadable backup folder: ${profile.name}/${backup.name}. Its backup record is missing, damaged or inaccessible; it is excluded from results.`);
+          result.warnings.push(`Unreadable phone folder: ${profile.name}/${child.name}. Check its permissions and drive connection.`);
         }
       }
     } catch (error) {
