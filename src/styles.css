@@ -76,7 +76,8 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-:root {
+:root, [data-theme="dark"] {
+  color-scheme: dark;
   --radius: 1rem;
   --background: oklch(0.2 0.01 160);
   --foreground: oklch(0.93 0.01 90);
@@ -114,7 +115,8 @@
   --glow: 0 0 0 1px color-mix(in oklab, var(--primary) 25%, transparent), 0 10px 40px -12px color-mix(in oklab, var(--primary) 35%, transparent);
 }
 
-.light {
+[data-theme="light"] {
+  color-scheme: light;
   --background: oklch(0.95 0.015 145);
   --foreground: oklch(0.3 0.02 170);
   --card: oklch(0.98 0.008 140);
@@ -146,6 +148,7 @@
   body {
     background-color: var(--color-background);
     color: var(--color-foreground);
+    transition: background-color 0.3s ease, color 0.3s ease;
   }
 }
 

@@ -42,21 +42,32 @@ function Index() {
 
   useEffect(() => {
     setPin(newPin()); setNow(new Date());
-    const saved = localStorage.getItem("homesafe-tone");
-    if (saved === "light") { setLight(true); document.documentElement.classList.add("light"); }
+    const html = document.documentElement;
+    const saved = localStorage.getItem("theme");
+    const initial = saved ?? (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    html.setAttribute("data-theme", initial);
+    setLight(initial === "light");
+    const mq = window.matchMedia("(prefers-color-scheme: light)");
+    const onChange = (e: MediaQueryListEvent) => {
+      if (!localStorage.getItem("theme")) {
+        html.setAttribute("data-theme", e.matches ? "light" : "dark");
+        setLight(e.matches);
+      }
+    };
+    mq.addEventListener("change", onChange);
     const t = setInterval(() => {
       setNow(new Date());
       setTemp((x) => Math.min(46, Math.max(34, x + (Math.random() - 0.5) * 0.6)));
       setLeft((l) => { if (l <= 1) { setPin(newPin()); return 30; } return l - 1; });
     }, 1000);
-    return () => clearInterval(t);
+    return () => { clearInterval(t); mq.removeEventListener("change", onChange); };
   }, []);
 
   const toggleTone = () => {
     setLight((l) => {
       const next = !l;
-      document.documentElement.classList.toggle("light", next);
-      localStorage.setItem("homesafe-tone", next ? "light" : "dark");
+      document.documentElement.setAttribute("data-theme", next ? "light" : "dark");
+      localStorage.setItem("theme", next ? "light" : "dark");
       return next;
     });
   };
@@ -76,19 +87,22 @@ function Index() {
               <p className="text-sm text-muted-foreground">Living Room Vault (Pi 5) · your home, your drive</p>
             </div>
           </div>
+          <div className="order-first flex w-full justify-center md:order-none md:w-auto md:flex-1">
+            <button
+              type="button"
+              onClick={toggleTone}
+              aria-label={light ? "Switch to dark mode" : "Switch to sage mode"}
+              className="inline-flex min-h-11 items-center gap-2 rounded-full border border-border bg-secondary px-5 text-sm font-medium transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            >
+              {light ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+              <span className="toggle-text">{light ? "Dark" : "Sage"}</span>
+            </button>
+          </div>
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-accent px-3 py-1.5 text-sm font-medium text-primary">
               <ShieldCheck className="h-4 w-4" /> 100% Local · No Internet Used
             </span>
             <span className="font-mono text-sm text-muted-foreground">{now?.toLocaleTimeString() ?? ""}</span>
-            <button
-              onClick={toggleTone}
-              aria-label={light ? "Switch to dark tone" : "Switch to sage tone"}
-              className="inline-flex min-h-11 items-center gap-2 rounded-full border border-border bg-secondary px-4 text-sm font-medium hover:bg-accent"
-            >
-              {light ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-              {light ? "Dark" : "Sage"}
-            </button>
           </div>
         </header>
 
