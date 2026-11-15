@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
-import { HardDrive, Thermometer, Wifi, ShieldCheck, KeyRound, Smartphone, Tablet, Laptop, History, RotateCcw, CheckCircle2, Loader2, Lock } from "lucide-react";
+import { HardDrive, Thermometer, Wifi, ShieldCheck, KeyRound, Smartphone, Tablet, Laptop, History, RotateCcw, CheckCircle2, Loader2, Lock, Sun, Moon } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -28,6 +28,7 @@ function Index() {
   const [left, setLeft] = useState(30);
   const [temp, setTemp] = useState(38.4);
   const [mounted, setMounted] = useState(true);
+  const [light, setLight] = useState(false);
   const [devices, setDevices] = useState<Device[]>([
     { id: "1", name: "Vinay's Pixel 8", kind: "phone", last: "2 min ago" },
     { id: "2", name: "Family iPad", kind: "tablet", last: "1 hr ago" },
@@ -41,6 +42,8 @@ function Index() {
 
   useEffect(() => {
     setPin(newPin()); setNow(new Date());
+    const saved = localStorage.getItem("homesafe-tone");
+    if (saved === "light") { setLight(true); document.documentElement.classList.add("light"); }
     const t = setInterval(() => {
       setNow(new Date());
       setTemp((x) => Math.min(46, Math.max(34, x + (Math.random() - 0.5) * 0.6)));
@@ -49,6 +52,14 @@ function Index() {
     return () => clearInterval(t);
   }, []);
 
+  const toggleTone = () => {
+    setLight((l) => {
+      const next = !l;
+      document.documentElement.classList.toggle("light", next);
+      localStorage.setItem("homesafe-tone", next ? "light" : "dark");
+      return next;
+    });
+  };
   const setSnap = (id: string, state: Snap["state"]) => setSnaps((s) => s.map((x) => (x.id === id ? { ...x, state } : x)));
   const validate = (id: string) => { setSnap(id, "checking"); setTimeout(() => setSnap(id, "valid"), 1800); };
   const restore = (id: string) => { setSnap(id, "restoring"); setTimeout(() => setSnap(id, "restored"), 2200); };
@@ -70,6 +81,14 @@ function Index() {
               <ShieldCheck className="h-4 w-4" /> 100% Local · No Internet Used
             </span>
             <span className="font-mono text-sm text-muted-foreground">{now?.toLocaleTimeString() ?? ""}</span>
+            <button
+              onClick={toggleTone}
+              aria-label={light ? "Switch to dark tone" : "Switch to sage tone"}
+              className="inline-flex min-h-11 items-center gap-2 rounded-full border border-border bg-secondary px-4 text-sm font-medium hover:bg-accent"
+            >
+              {light ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+              {light ? "Dark" : "Sage"}
+            </button>
           </div>
         </header>
 
