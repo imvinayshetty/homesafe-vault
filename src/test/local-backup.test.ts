@@ -8,6 +8,17 @@ async function identity(): Promise<Identity> {
 }
 const day = new Date(2026, 10, 15, 12);
 const entry: BackupEntry = { name: "Full_Bckup_151126", date: "151126", kind: "Full", files: 1, bytes: 20, complete: true };
+function missingProfileRoot(onCreate: () => void): LocalDirectory {
+  return {
+    kind: "directory", name: ROOT_FOLDER,
+    getDirectoryHandle: async (_name, options) => { if (options?.create) onCreate(); throw new Error("missing"); },
+    getFileHandle: async () => { throw new Error("missing"); },
+    async *values() { /* Empty storage. */ },
+    queryPermission: async () => "granted",
+    requestPermission: async () => "granted",
+    removeEntry: async () => { throw new Error("missing"); },
+  };
+}
 
 describe("Local backup rules", () => {
   it("uses the required storage root", () => { expect(ROOT_FOLDER).toBe("HomeSafeBckup"); });
@@ -30,7 +41,7 @@ describe("Local backup rules", () => {
   it("requires the exact root on reconnect", async () => { const device = await identity(); await expect(verifyProfile({ root: { name: "wrong" } as LocalDirectory, profile: "Vinay", identity: device })).rejects.toThrow("HomeSafeBckup"); });
   it("reports missing matching profile without creating it", async () => {
     let creates = 0;
-    const root = { kind: "directory", name: ROOT_FOLDER, getDirectoryHandle: async (_name: string, options?: { create?: boolean }) => { if (options?.create) creates++; throw new Error("missing"); } } as LocalDirectory;
+    const root = missingProfileRoot(() => { creates++; });
     await expect(verifyProfile({ root, profile: "Vinay", identity: await identity() })).rejects.toThrow("No matching profile"); expect(creates).toBe(0);
   });
   it("prevents replacing an existing profile identity", async () => {
@@ -39,7 +50,7 @@ describe("Local backup rules", () => {
   });
   it("rejects backup before writes when the profile cannot be verified", async () => {
     let writes = 0;
-    const root = { kind: "directory", name: ROOT_FOLDER, getDirectoryHandle: async (_name: string, options?: { create?: boolean }) => { if (options?.create) writes++; throw new Error("missing"); } } as LocalDirectory;
+    const root = missingProfileRoot(() => { writes++; });
     await expect(createBackup({ root, profile: "Vinay", identity: await identity() }, "Full", entry.name, [{ file: new File(["photo"], "photo.jpg"), path: "photo.jpg" }], day, false)).rejects.toThrow("No matching profile"); expect(writes).toBe(0);
   });
 });
