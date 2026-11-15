@@ -31,7 +31,8 @@
 
 @theme inline {
   --color-warning: var(--warning);
-  --font-sans: "Manrope", system-ui, sans-serif;
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Fraunces", Georgia, serif;
   --font-mono: "JetBrains Mono", monospace;
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -76,24 +77,24 @@
 }
 
 :root {
-  --radius: 0.875rem;
-  --background: oklch(0.19 0.012 200);
-  --foreground: oklch(0.93 0.015 150);
-  --card: oklch(0.235 0.014 195);
+  --radius: 1rem;
+  --background: oklch(0.2 0.01 160);
+  --foreground: oklch(0.93 0.01 90);
+  --card: oklch(0.24 0.012 158);
   --card-foreground: oklch(0.93 0.015 150);
   --popover: oklch(0.235 0.014 195);
   --popover-foreground: oklch(0.93 0.015 150);
-  --primary: oklch(0.74 0.07 150);
+  --primary: oklch(0.72 0.05 152);
   --primary-foreground: oklch(0.18 0.02 170);
   --secondary: oklch(0.28 0.015 200);
   --secondary-foreground: oklch(0.9 0.015 150);
   --muted: oklch(0.27 0.012 200);
   --muted-foreground: oklch(0.66 0.02 180);
-  --accent: oklch(0.32 0.03 160);
+  --accent: oklch(0.3 0.025 152);
   --accent-foreground: oklch(0.93 0.02 150);
   --destructive: oklch(0.65 0.14 25);
   --destructive-foreground: oklch(0.97 0 0);
-  --warning: oklch(0.8 0.11 80);
+  --warning: oklch(0.72 0.1 50);
   --border: oklch(0.32 0.012 200);
   --input: oklch(0.32 0.012 200);
   --ring: oklch(0.74 0.07 150);
@@ -134,3 +135,4 @@
 @keyframes pulse-dot { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
 @utility pulse-dot { animation: pulse-dot 2s ease-in-out infinite; }
 body { font-family: var(--font-sans); }
+h1, h2 { font-family: var(--font-display); font-weight: 500; letter-spacing: -0.01em; }
