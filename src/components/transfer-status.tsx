@@ -61,7 +61,7 @@ export function AwaitingCard({ service, profile, phone, sample, action }: { serv
 }
 
 /** Full-screen payment-style transfer animation, from Establishing connection onwards. */
-export function TransferScreen({ state, profile, phone, service, onClose, sample }: { state: TransferState; profile: string; phone: string; service: Service; onClose?: () => void; sample?: boolean }) {
+export function TransferScreen({ state, profile, phone, service, onClose, sample }: { state: TransferState; profile: string; phone: string; service: Service; onClose?: (() => void) | undefined; sample?: boolean }) {
   const { stage, failed, progress } = state;
   const steps = transferSteps(profile, phone);
   const pct = Math.round((progress ?? 0) * 100);
