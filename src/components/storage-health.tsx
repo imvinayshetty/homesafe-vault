@@ -2,9 +2,9 @@ import { HardDrive, TrendingUp, AlertTriangle, CircleHelp } from "lucide-react";
 import { backupSizeSummary, formatStorageBytes } from "@/lib/storage-health";
 import { type Catalog, type StorageIssue } from "@/lib/backup-catalog";
 
-interface StorageHealthProps { catalog: Catalog; connected: boolean; problem: StorageIssue | null }
+interface StorageHealthProps { catalog: Catalog; connected: boolean; problem: StorageIssue | null; compact?: boolean }
 
-export function StorageHealth({ catalog, connected, problem }: StorageHealthProps) {
+export function StorageHealth({ catalog, connected, problem, compact = false }: StorageHealthProps) {
   const readable = connected && (!problem || problem === "space");
   const summary = backupSizeSummary(readable ? catalog.entries : []);
   const recent = summary.days.slice(-14);
@@ -12,12 +12,12 @@ export function StorageHealth({ catalog, connected, problem }: StorageHealthProp
   const chartHeight = 128;
 
   return (
-    <section aria-labelledby="storage-health-heading" className="space-y-5 border-t border-border pt-5">
+    <section aria-labelledby="storage-health-heading" className={compact ? "h-full space-y-5 rounded-2xl border border-border bg-card/60 p-5" : "space-y-5 border-t border-border pt-5"}>
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h3 id="storage-health-heading" className="flex items-center gap-2 font-display text-xl"><HardDrive className="h-5 w-5 text-primary" />Storage health</h3>
+        <h3 id="storage-health-heading" className="flex items-center gap-2 font-display text-xl"><HardDrive className="h-5 w-5 text-primary" />{compact ? "Drive health" : "Storage health"}</h3>
         <span className="text-xs text-muted-foreground">{readable ? "Selected storage · all profiles" : connected ? "Storage access unavailable" : "No storage selected"}</span>
       </div>
-      <dl className="grid gap-5 sm:grid-cols-3">
+      <dl className={compact ? "grid gap-4 sm:grid-cols-3 lg:grid-cols-1" : "grid gap-5 sm:grid-cols-3"}>
         <div><dt className="text-sm text-muted-foreground">Available drive space</dt><dd className="mt-2 text-xl font-medium">Unavailable</dd><dd className="mt-1 text-xs text-muted-foreground">Local drive measurement not connected</dd></div>
         <div><dt className="text-sm text-muted-foreground">Recorded backup size</dt><dd className="mt-2 font-mono text-xl text-primary">{readable ? formatStorageBytes(summary.bytes) : "—"}</dd><dd className="mt-1 text-xs text-muted-foreground">{readable ? `${summary.count} completed backups · not total drive usage` : "Connect storage to read backup records"}</dd></div>
         <div><dt className="text-sm text-muted-foreground">Capacity alerts</dt><dd className={`mt-2 flex items-center gap-2 text-sm font-medium ${problem === "space" ? "text-warning" : "text-muted-foreground"}`}>{problem === "space" ? <><AlertTriangle className="h-4 w-4" />Write limit reached</> : <><CircleHelp className="h-4 w-4" />Early warning unavailable</>}</dd><dd className="mt-2 text-xs text-muted-foreground">Free space and nearing-capacity alerts need the local Vault service. Check the drive’s free space on your computer.</dd></div>

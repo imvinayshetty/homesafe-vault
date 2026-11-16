@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "events": {
+    "project.backup_profile_selected": {
+      "event_schema_version": 1,
+      "description": "Owner confirmed a profile and phone folder as backup destination.",
+      "privacy": {
+        "contains_pii": false,
+        "purpose": "product_analytics"
+      },
+      "properties_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "project.backup_transfer_completed": {
+      "event_schema_version": 1,
+      "description": "Local Vault service reported the backup completed.",
+      "privacy": {
+        "contains_pii": false,
+        "purpose": "product_analytics"
+      },
+      "properties_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "project.backup_transfer_failed": {
+      "event_schema_version": 1,
+      "description": "Local Vault service reported a failure; stage shows where the backup stalled.",
+      "privacy": {
+        "contains_pii": false,
+        "purpose": "product_analytics"
+      },
+      "properties_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stage"
+        ],
+        "properties": {
+          "stage": {
+            "type": "string",
+            "enum": [
+              "awaiting",
+              "connecting",
+              "verified",
+              "initiating",
+              "in_progress",
+              "completed"
+            ]
+          }
+        }
+      }
+    },
+    "project.backup_transfer_started": {
+      "event_schema_version": 1,
+      "description": "Local Vault service reported the backup transfer started.",
+      "privacy": {
+        "contains_pii": false,
+        "purpose": "product_analytics"
+      },
+      "properties_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    },
+    "project.phone_paired": {
+      "event_schema_version": 1,
+      "description": "Local Vault service verified the pairing code for the confirmed phone.",
+      "privacy": {
+        "contains_pii": false,
+        "purpose": "product_analytics"
+      },
+      "properties_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      }
+    }
+  }
+}

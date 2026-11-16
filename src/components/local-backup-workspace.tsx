@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FolderOpen, ShieldCheck, FilePlus2, Smartphone, AlertTriangle, Loader2, RefreshCw, FilterX, Plus, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { TransferStatus } from "@/components/transfer-status";
 import { StorageHealth } from "@/components/storage-health";
 import { backupISODate, filterBackups, scanCatalog, storageIssue, storageWarning, type Catalog, type StorageIssue } from "@/lib/backup-catalog";
 import { ROOT_FOLDER, createBackup, dateCode, defaultBackupName, ensurePermission, hasSameDate, listBackups, loadSetting, localIdentity, registerPhone, safeSegment, saveSetting, verifyProfile, type BackupEntry, type BackupFile, type BackupKind, type Enrollment, type LocalDirectory } from "@/lib/local-backup";
@@ -180,34 +181,19 @@ export function LocalBackupWorkspace() {
             {saved && !enrollment && <Button variant="outline" className="min-h-11" disabled={busy} onClick={() => void connect(false, true)}>Reconnect saved profile</Button>}
           </div>
           {supported === false && <p className="text-sm text-warning">Folder access is unavailable here. Open this page in desktop Chrome or Edge to use local storage.</p>}
-          {enrollment && <div className="space-y-3 text-sm"><p className="flex items-center gap-2 text-primary"><ShieldCheck className="h-4 w-4" />Encrypted browser identity verified</p><p className="break-all font-mono text-xs text-muted-foreground">{ROOT_FOLDER}/{enrollment.profile}/{enrollment.phone ?? "Legacy profile-level backups"}/</p>{enrollment.phone ? <Button variant={confirmed ? "secondary" : "outline"} disabled={busy || confirmed} onClick={() => setConfirmed(true)}><Check />{confirmed ? "Destination confirmed" : "Confirm profile & phone folder"}</Button> : <p className="text-warning">Existing profile-level backups are read-only here. Create or reconnect a named phone folder for new backups; existing files stay untouched.</p>}</div>}
+          {enrollment && <div className="space-y-3 text-sm"><p className="flex items-center gap-2 text-primary"><ShieldCheck className="h-4 w-4" />Encrypted browser identity verified</p><p className="break-all font-mono text-xs text-muted-foreground">{ROOT_FOLDER}/{enrollment.profile}/{enrollment.phone ?? "Legacy profile-level backups"}/</p>{enrollment.phone ? <Button variant={confirmed ? "secondary" : "outline"} disabled={busy || confirmed} onClick={() => { setConfirmed(true); window.__lovableEvents?.track?.("project.backup_profile_selected", {}); }}><Check />{confirmed ? "Destination confirmed" : "Confirm profile & phone folder"}</Button> : <p className="text-warning">Existing profile-level backups are read-only here. Create or reconnect a named phone folder for new backups; existing files stay untouched.</p>}</div>}
         </div>
-        <div className="space-y-4">
-          <h3 className="font-medium">New backup</h3>
-          <fieldset disabled={locked} className="flex flex-wrap gap-5 text-sm">
-            <legend className="sr-only">Backup type</legend>
-            <label className="flex items-center gap-2"><input type="radio" name="backup-kind" checked={kind === "Full"} onChange={() => changeKind("Full")} className="accent-primary" />Full backup</label>
-            <label className="flex items-center gap-2"><input type="radio" name="backup-kind" checked={kind === "Custom"} onChange={() => changeKind("Custom")} className="accent-primary" />Custom folders</label>
-          </fieldset>
-          <p className="text-sm text-muted-foreground">{kind === "Full" ? "Full means all accessible files, not a whole-phone recovery image. In this browser, only files you explicitly select are copied; nothing is automatically discovered." : "Select the folders you want to include. Folder names and subfolders are preserved."}</p>
-          <input ref={fileInput} type="file" multiple hidden onChange={e => { selectFiles(e.target.files); e.target.value = ""; }} />
-          <input ref={folderInput} type="file" multiple hidden onChange={e => { selectFiles(e.target.files); e.target.value = ""; }} />
-          <div className="flex flex-wrap gap-2">
-            {kind === "Full" && <Button variant="outline" className="min-h-11" disabled={locked} onClick={() => fileInput.current?.click()}><FilePlus2 />Select files</Button>}
-            <Button variant="outline" className="min-h-11" disabled={locked} onClick={() => folderInput.current?.click()}><FolderOpen />Select folder</Button>
-          </div>
-          <p className="text-xs text-muted-foreground">{files.length} files selected · {(files.reduce((sum, item) => sum + item.file.size, 0) / 1024 / 1024).toFixed(2)} MB</p>
-          <label className="block text-sm">Backup folder name
-            <input value={name} onChange={e => setName(e.target.value)} disabled={locked} className="mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3 font-mono text-sm outline-none focus:ring-2 focus:ring-ring" />
-          </label>
-          {duplicate && <p className="flex items-start gap-2 text-sm text-warning"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />A backup already exists for today. Add a unique suffix, such as _2, before saving another.</p>}
-          <Button disabled={locked || !files.length} className="min-h-11" onClick={() => void backup()}>{busy ? <Loader2 className="animate-spin" /> : <ShieldCheck />}Verify identity &amp; save files</Button>
+        <div>
+          {enrollment?.phone && confirmed ? <p className="text-sm text-primary">Transfer dashboard is open below.</p> : <p className="text-sm text-muted-foreground">Confirm your profile and phone folder to open the transfer dashboard.</p>}
         </div>
       </div>
       {storageProblem && <div role="alert" className="flex items-start gap-2 border-l-2 border-warning pl-3 text-sm text-warning"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><p>{storageWarning(storageProblem)}</p></div>}
       {error && <p role="alert" className="border-l-2 border-destructive pl-3 text-sm text-destructive">{error}</p>}
       {message && <p role="status" className="break-words text-sm text-primary">{message}</p>}
       {busy && <p role="status" className="text-sm text-muted-foreground">Accessing local storage… Keep this page open.</p>}
+      {enrollment?.phone && confirmed ? (
+        <TransferStatus profile={enrollment.profile} phone={enrollment.phone} />
+      ) : null}
       <StorageHealth catalog={catalog} connected={Boolean(enrollment)} problem={storageProblem} />
       <details className="border-t border-border pt-4 text-sm" open>
         <summary className="cursor-pointer font-medium">What Android &amp; iPhone can back up</summary>

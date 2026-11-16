@@ -4,6 +4,8 @@
 - [x] Update Vault with service-dependent account/access screens, destination confirmation, named-phone folders, legacy-safe catalog browsing and truthful unavailable pairing states. Verified 39 tests and actual browser-managed file write/readback, duplicate rejection and mobile/desktop layout; USB permissions remain a manual check.
 - [ ] Real Vault registration/Authy login, phone pairing and revocation enforcement: requires an installed local Vault service and native phone companions, absent from this project.
 - [x] Review and approve the HomeSafe mobile changes for local email/profile access, named phones and QR/manual-IP pairing before implementation.
+- [x] Replace Vault New Backup with transfer status steps; backup choice moves to HomeSafe.
+- [x] Wire transfer stages to the local Vault service event contract and add tracking for profile selection, pairing, transfer start, completion and failure.
 - [ ] Apply the approved HomeSafe changes: blocked on opening the HomeSafe project chat; this project has read-only access to HomeSafe. Real enrollment/transfer also requires native phone apps and a local Vault service.
 - [x] Add profile/type/date filters and storage access, space and unreadable-folder warnings; verify filtering and warning states with a browser folder adapter. External-drive capacity is unavailable in browsers; space warnings respond to actual write-limit errors.
 - [x] Add local-folder browser profile registration and AES-256 identity verification.

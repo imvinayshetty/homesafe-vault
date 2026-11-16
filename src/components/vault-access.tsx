@@ -1,3 +1,4 @@
+import QRCode from "qrcode";
 import { useEffect, useState } from "react";
 import { Mail, KeyRound, Smartphone, QrCode, ShieldCheck, Loader2, LogOut, Copy, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -6,7 +7,7 @@ import { supabase } from "@/integrations/supabase/client";
 type Stage =
   | { kind: "form" }
   | { kind: "confirm-email"; email: string }
-  | { kind: "enroll"; factorId: string; qr: string; secret: string }
+  | { kind: "enroll"; factorId: string; qr: string; secret: string; uri: string }
   | { kind: "challenge"; factorId: string }
   | { kind: "signed-in"; email: string };
 
@@ -23,6 +24,8 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [copied, setCopied] = useState(false);
+  const [scanned, setScanned] = useState(false);
+  const [accepted, setAccepted] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -56,7 +59,9 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     if (existing) await supabase.auth.mfa.unenroll({ factorId: existing.id });
     const { data: enroll, error: enrollError } = await supabase.auth.mfa.enroll({ factorType: "totp", friendlyName: `Authy ${crypto.randomUUID().slice(0, 8)}` });
     if (enrollError) throw enrollError;
-    return { kind: "enroll", factorId: enroll.id, qr: enroll.totp.qr_code, secret: enroll.totp.secret };
+    // Scanners need dark modules on a white quiet zone; render our own PNG from the otpauth URI.
+    const qr = await QRCode.toDataURL(enroll.totp.uri, { width: 320, margin: 4, errorCorrectionLevel: "M", color: { dark: "#000000", light: "#ffffff" } });
+    return { kind: "enroll", factorId: enroll.id, qr, secret: enroll.totp.secret, uri: enroll.totp.uri };
   }
 
   async function run(work: () => Promise<void>) {
@@ -88,7 +93,18 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     if (verifyError) throw verifyError;
     setToken("");
     if (after.kind === "enroll") {
-      setStage({ kind: "signed-in", email });
+      // Only mark registration complete once the backend confirms the factor and session are verified.
+      const [{ data: aal }, { data: factors }] = await Promise.all([
+        supabase.auth.mfa.getAuthenticatorAssuranceLevel(),
+        supabase.auth.mfa.listFactors(),
+      ]);
+      const factor = factors?.totp.find(f => f.id === factorId);
+      if (aal?.currentLevel !== "aal2" || factor?.status !== "verified") {
+        throw new Error("Authy setup could not be confirmed. Please enter a fresh code from Authy.");
+      }
+      setScanned(false); setAccepted(false);
+      const { data: u } = await supabase.auth.getUser();
+      setStage({ kind: "signed-in", email: u.user?.email ?? email });
       setNotice("Authy is now protecting your Vault account.");
     } else {
       setStage(await nextStep());
@@ -132,22 +148,35 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
           <div className="space-y-4">
             <h3 className="flex items-center gap-2 font-medium"><QrCode className="h-4 w-4 text-primary" />Set up Authy</h3>
             <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
-              <li>Open the Authy app on your phone.</li>
-              <li>Add an account and scan this QR code, or enter the setup key manually.</li>
+              <li>Open Authy, tap <span className="font-medium text-foreground">+ Add account</span>, then <span className="font-medium text-foreground">Scan QR code</span>.</li>
+              <li>Point the camera at the code on this screen.</li>
               <li>Type the 6-digit code Authy shows to finish.</li>
             </ol>
-            <div className="flex items-center gap-2 rounded-md border border-border bg-background p-3 font-mono text-sm">
-              <span className="break-all">{stage.secret}</span>
-              <Button variant="ghost" size="icon" aria-label="Copy setup key" onClick={() => void copySecret()}>{copied ? <Check className="h-4 w-4 text-primary" /> : <Copy className="h-4 w-4" />}</Button>
-            </div>
+            <div className="flex justify-center rounded-xl bg-card p-2 lg:hidden"><img src={stage.qr} alt="Authy setup QR code" width={240} height={240} className="h-60 w-60 rounded-md" /></div>
+            <a href={stage.uri} className="inline-flex min-h-11 items-center gap-2 rounded-md border border-border px-4 text-sm font-medium hover:bg-accent lg:hidden"><Smartphone className="h-4 w-4" />On this phone? Open in Authy</a>
+            <details className="rounded-md border border-border p-3 text-sm">
+              <summary className="cursor-pointer text-muted-foreground">Can't scan? Enter a setup key instead</summary>
+              <div className="mt-3 flex items-center gap-2 rounded-md bg-background p-3 font-mono text-sm">
+                <span className="break-all">{stage.secret}</span>
+                <Button variant="ghost" size="icon" aria-label="Copy setup key" onClick={() => void copySecret()}>{copied ? <Check className="h-4 w-4 text-primary" /> : <Copy className="h-4 w-4" />}</Button>
+              </div>
+              <p className="mt-2 text-xs text-muted-foreground">In Authy choose "Enter key manually" and paste this key.</p>
+            </details>
+            <fieldset className="space-y-2 rounded-md border border-border p-3 text-sm">
+              <legend className="px-1 font-medium">Setup check</legend>
+              <label className="flex min-h-11 items-center gap-3"><input type="checkbox" className="h-5 w-5 accent-primary" checked={scanned} onChange={e => { setScanned(e.target.checked); if (!e.target.checked) setAccepted(false); }} />1. The QR code opened in Authy</label>
+              <label className={`flex min-h-11 items-center gap-3 ${scanned ? "" : "opacity-50"}`}><input type="checkbox" className="h-5 w-5 accent-primary" disabled={!scanned} checked={accepted} onChange={e => setAccepted(e.target.checked)} />2. Authy saved the "HomeSafe Vault" account</label>
+              <p className={`flex items-center gap-3 ${accepted ? "" : "opacity-50"}`}><span className="flex h-5 w-5 items-center justify-center rounded-full border border-border text-xs">3</span>Enter the 6-digit PIN Authy generates</p>
+            </fieldset>
             <label className="block text-sm">Authy code
-              <input value={token} onChange={e => setToken(e.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code" className={inputClass} />
+              <input value={token} onChange={e => setToken(e.target.value.replace(/\D/g, "").slice(0, 6))} disabled={!accepted} inputMode="numeric" autoComplete="one-time-code" placeholder={accepted ? "6-digit code" : "Complete steps 1 and 2 first"} className={inputClass} />
             </label>
-            <Button className="min-h-11" disabled={busy || token.trim().length < 6} onClick={() => void verifyToken(stage.factorId, stage)}>
+            <p className="text-xs text-muted-foreground">Registration is marked complete only after Vault confirms this PIN.</p>
+            <Button className="min-h-11" disabled={busy || !accepted || token.trim().length !== 6} onClick={() => void verifyToken(stage.factorId, stage)}>
               {busy ? <Loader2 className="animate-spin" /> : <KeyRound />}Verify &amp; finish setup
             </Button>
           </div>
-          <div className="flex items-start justify-center" dangerouslySetInnerHTML={{ __html: stage.qr }} />
+          <div className="hidden items-start justify-center lg:flex"><img src={stage.qr} alt="Authy setup QR code" width={320} height={320} className="h-80 w-80 rounded-lg" /></div>
         </div>
       ) : stage.kind === "challenge" ? (
         <div className="max-w-md space-y-4">

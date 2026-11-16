@@ -39,3 +39,4 @@ use the editor.
 - Derive storage-health trends from completed catalog manifest payload sizes across all profiles, independently of saved-backup filters; these sizes are not filesystem usage or capacity measurements.
 - New browser-file backups require a named phone destination and bind AES-GCM identity to profile/phone; retain legacy profile-level records read-only to avoid implicit migration or overwrite.
 - Vault account and pairing screens remain unavailable without the local service; never store TOTP secrets in browser settings or manufacture a successful login, pairing QR, or phone revocation.
+- Transfer stages advance only via the pure reducer in src/lib/vault-daemon.ts fed by the local Vault service loopback WebSocket; the browser never invents stage progress.
