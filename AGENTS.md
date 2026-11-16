@@ -48,3 +48,5 @@ use the editor.
 - Record real backup activity only in the companion's bounded local event log; never send pairing or transfer analytics to cloud tracking.
 - Support HomeSafe's existing native signed begin/confirm and chunk protocol in a separate local adapter; never change the hosted app into a TLS or native-key proxy.
 - Guided installers use OS startup tools with argument arrays, protect local keys, and persist verified drive identity; startup must reject replaced drives rather than silently adopt them.
+
+- Electron wrapper in `electron/` loads the hosted dashboard, spawns vault-service via ELECTRON_RUN_AS_NODE, and exposes the owner key only via origin-checked IPC; the hosted app cannot launch local processes.
