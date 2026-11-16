@@ -66,27 +66,40 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     return { kind: "enroll", factorId: enroll.id, qr, secret: enroll.totp.secret, uri: enroll.totp.uri };
   }
 
-  async function run(work: () => Promise<void>) {
+  async function run(work: () => Promise<void>, flow?: "registration" | "sign_in", step?: "account_submission" | "password_verification" | "authy_verification") {
     setBusy(true); setError(""); setNotice("");
     try { await work(); }
-    catch (e) { setError(e instanceof Error ? e.message : "Something went wrong. Please try again."); }
+    catch (e) {
+      if (flow && step) window.__lovableEvents?.track?.("project.account_flow_failed", { flow, step });
+      setError(e instanceof Error ? e.message : "Something went wrong. Please try again.");
+    }
     finally { setBusy(false); }
   }
 
   const register = () => run(async () => {
+    window.__lovableEvents?.track?.("project.account_flow_started", { flow: "registration" });
     const { error: signUpError } = await supabase.auth.signUp({
       email: email.trim(), password,
       options: { emailRedirectTo: window.location.origin },
     });
     if (signUpError) throw signUpError;
+    window.__lovableEvents?.track?.("project.account_step_completed", { flow: "registration", step: "account_submission" });
     setStage({ kind: "confirm-email", email: email.trim() });
-  });
+  }, "registration", "account_submission");
 
   const login = () => run(async () => {
+    window.__lovableEvents?.track?.("project.account_flow_started", { flow: "sign_in" });
     const { error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     if (signInError) throw signInError;
-    setEnrollStep("scan"); setStage(await nextStep());
-  });
+    window.__lovableEvents?.track?.("project.account_step_completed", { flow: "sign_in", step: "password_verification" });
+    const next = await nextStep();
+    if (next.kind === "enroll") {
+      // Enrollment can resume in a later visit after email confirmation; count that entry separately.
+      window.__lovableEvents?.track?.("project.account_step_completed", { flow: "registration", step: "enrollment_ready" });
+    }
+    if (next.kind === "signed-in") window.__lovableEvents?.track?.("project.account_flow_completed", { flow: "sign_in" });
+    setEnrollStep("scan"); setStage(next);
+  }, "sign_in", "password_verification");
 
   const verifyToken = (factorId: string, after: Stage) => run(async () => {
     const { data: challenge, error: challengeError } = await supabase.auth.mfa.challenge({ factorId });
@@ -107,11 +120,19 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
       setScanned(false); setAccepted(false);
       const { data: u } = await supabase.auth.getUser();
       setStage({ kind: "signed-in", email: u.user?.email ?? email });
+      window.__lovableEvents?.track?.("project.account_step_completed", { flow: "registration", step: "authy_verification" });
+      window.__lovableEvents?.track?.("project.account_flow_completed", { flow: "registration" });
+      window.__lovableEvents?.track?.("project.account_flow_completed", { flow: "sign_in" });
       setNotice("Authy is now protecting your Vault account.");
     } else {
-      setEnrollStep("scan"); setStage(await nextStep());
+      const next = await nextStep();
+      if (next.kind === "signed-in") {
+        window.__lovableEvents?.track?.("project.account_step_completed", { flow: "sign_in", step: "authy_verification" });
+        window.__lovableEvents?.track?.("project.account_flow_completed", { flow: "sign_in" });
+      }
+      setEnrollStep("scan"); setStage(next);
     }
-  });
+  }, after.kind === "enroll" ? "registration" : "sign_in", "authy_verification");
 
   const signOut = () => run(async () => {
     await supabase.auth.signOut();
@@ -157,7 +178,7 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
         <label className="flex min-h-11 items-center gap-3"><input type="checkbox" checked={scanned} className="h-5 w-5 accent-primary" onChange={e => { setScanned(e.target.checked); if (!e.target.checked) setAccepted(false); }} />The QR code opened in Authy</label>
         <label className="flex min-h-11 items-center gap-3"><input type="checkbox" checked={accepted} disabled={!scanned} className="h-5 w-5 accent-primary" onChange={e => setAccepted(e.target.checked)} />Authy saved my Vault account</label>
       </fieldset>
-      <Button className="min-h-12 w-full" disabled={!scanned || !accepted} onClick={() => { setToken(""); setError(""); setEnrollStep("pin"); }}>Continue to verification<ArrowRight /></Button>
+      <Button className="min-h-12 w-full" disabled={!scanned || !accepted} onClick={() => { setToken(""); setError(""); setEnrollStep("pin"); window.__lovableEvents?.track?.("project.account_step_completed", { flow: "registration", step: "authy_setup_confirmed" }); }}>Continue to verification<ArrowRight /></Button>
     </> : stage.kind === "enroll" || stage.kind === "challenge" ? <>
       <Smartphone className="h-10 w-10 text-primary" />
       <p className="text-sm text-muted-foreground">Enter the current six-digit code for your Vault account in Authy.</p>
