@@ -41,3 +41,6 @@ use the editor.
 - Vault account and pairing screens remain unavailable without the local service; never store TOTP secrets in browser settings or manufacture a successful login, pairing QR, or phone revocation.
 - Transfer stages advance only via the pure reducer in src/lib/vault-daemon.ts fed by the local Vault service loopback WebSocket; the browser never invents stage progress.
 - Display live phone-pairing codes only from expiring local-service events on the awaiting screen; isolate 30-second sample rotation from authentication so demonstrations cannot grant access.
+- Keep the Node local companion in vault-service, outside the hosted app import graph; it owns native disk I/O and HTTPS phone uploads, while the dashboard uses an origin-checked, owner-key-authenticated loopback socket.
+- Keep native-service destinations separate from browser-enrolled phone folders; existing encrypted browser identities must not be silently migrated or replaced.
+- Record real backup activity only in the companion's bounded local event log; never send pairing or transfer analytics to cloud tracking.

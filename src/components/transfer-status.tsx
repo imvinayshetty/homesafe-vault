@@ -7,22 +7,30 @@ import { VaultPairingCode } from "@/components/vault-pairing-code";
 export function transferSteps(profile: string, phone: string): string[] {
   return ["Awaiting connection", "Establishing connection", `Code success verified for ${profile} ${phone}`, "Initiating Transfer", "Transfer in progress", "Backup Completed"];
 }
-const STAGE_NAMES = ["awaiting", "connecting", "verified", "initiating", "in_progress", "completed"] as const;
 
 /** Stage advances only from events sent by the local Vault service over the loopback socket. */
-export function TransferStatus({ profile, phone }: { profile: string; phone: string }) {
+export function TransferStatus({ profile, phone, accessKey = "" }: { profile: string; phone: string; accessKey?: string }) {
   const [state, setState] = useState<TransferState>({ stage: 0 });
   const [pairing, setPairing] = useState<PairingCode | null>(null);
   const [service, setService] = useState<"checking" | "online" | "offline">("checking");
   const stateRef = useRef(state);
+  const socketRef = useRef<WebSocket | null>(null);
+  const [serviceError, setServiceError] = useState("");
   useEffect(() => {
     setPairing(null);
+    stateRef.current = { stage: 0 }; setState({ stage: 0 }); setServiceError("");
     let ws: WebSocket | null = null; let retry: ReturnType<typeof setTimeout>; let stopped = false;
     const open = () => {
       try { ws = new WebSocket(`${DAEMON_URL}?profile=${encodeURIComponent(profile)}&phone=${encodeURIComponent(phone)}`); } catch { setService("offline"); return; }
-      ws.onopen = () => setService("online");
-      ws.onclose = () => { setService("offline"); setPairing(null); if (!stopped) retry = setTimeout(open, 10000); };
+      socketRef.current = ws;
+      ws.onopen = () => { ws?.send(JSON.stringify({ type: "authenticate", token: accessKey })); };
+      ws.onclose = (event) => { setService("offline"); setPairing(null); if (event.code === 1008) setServiceError("Local access key was rejected. Disconnect and enter the key from your Vault service."); if (!stopped && event.code !== 1008) retry = setTimeout(open, 10000); };
       ws.onmessage = (m) => {
+        try {
+          const message = JSON.parse(String(m.data));
+          if (message.type === "service_ready") { setService("online"); ws?.send(JSON.stringify({ type: "select_destination", profile, phone })); return; }
+          if (message.type === "service_error") { setServiceError(String(message.reason)); return; }
+        } catch { return; }
         const e = parseDaemonEvent(m.data); if (!e) return;
         if (e.type === "pairing_code") {
           setPairing({ code: e.code, expiresAt: Math.min(e.expiresAt, Date.now() + PAIRING_CODE_LIFETIME_MS) });
@@ -32,18 +40,14 @@ export function TransferStatus({ profile, phone }: { profile: string; phone: str
         const prev = stateRef.current; const next = applyDaemonEvent(prev, e, profile, phone);
         if (next === prev) return;
         stateRef.current = next; setState(next);
-        const track = window.__lovableEvents?.track;
-        if (next.failed && !prev.failed) track?.("project.backup_transfer_failed", { stage: STAGE_NAMES[next.stage] });
-        else if (next.stage === 2 && prev.stage !== 2) track?.("project.phone_paired", {});
-        else if (next.stage === 3 && prev.stage !== 3) track?.("project.backup_transfer_started", {});
-        else if (next.stage === 5 && prev.stage !== 5) track?.("project.backup_transfer_completed", {});
+        // Activity is recorded locally by the service, not cloud analytics.
       };
     };
     open();
     return () => { stopped = true; clearTimeout(retry); ws?.close(); };
-  }, [profile, phone]);
-  if (state.stage === 0 && !state.failed) return <AwaitingCard service={service} profile={profile} phone={phone} pairing={pairing} />;
-  return <TransferScreen state={state} profile={profile} phone={phone} service={service} onClose={state.failed || state.stage === 5 ? () => { stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
+  }, [profile, phone, accessKey]);
+  if (state.stage === 0 && !state.failed) return <><AwaitingCard service={service} profile={profile} phone={phone} pairing={pairing} />{serviceError && <p role="alert" className="text-sm text-destructive">{serviceError}</p>}</>;
+  return <TransferScreen state={state} profile={profile} phone={phone} service={service} onClose={state.failed || state.stage === 5 ? () => { socketRef.current?.send(JSON.stringify({ type: "reset" })); stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
 }
 
 type Service = "checking" | "online" | "offline";

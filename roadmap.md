@@ -1,4 +1,5 @@
 # Backup workflow
+- [x] Build and test a standalone PC/Raspberry Pi service with authenticated local monitoring, rotating pairing codes, encrypted phone identity, real disk writes and transfer events; document installation and phone protocol. Real socket/disk tests pass on Linux; user's installation and native HomeSafe client remain required. Authenticated browser check is blocked by the existing Authy gate on the available password-only session.
 - [x] Add storage health panel with completed-backup payload trends, totals and actual write-limit alerts; verified 43 tests, real browser-file readback and mobile layout.
 - [ ] Available drive space and proactive nearing-capacity alerts: blocked on an installed local Vault service able to measure the selected drive; browser estimates are not drive capacity.
 - [x] Update Vault with service-dependent account/access screens, destination confirmation, named-phone folders, legacy-safe catalog browsing and truthful unavailable pairing states. Verified 39 tests and actual browser-managed file write/readback, duplicate rejection and mobile/desktop layout; USB permissions remain a manual check.

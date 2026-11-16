@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { LocalBackupWorkspace } from "@/components/local-backup-workspace";
 import { VaultAccess } from "@/components/vault-access";
 import { SampleTransfer } from "@/components/sample-transfer";
+import { LocalVaultConnection } from "@/components/local-vault-connection";
 import { Button } from "@/components/ui/button";
 import { HardDrive, Thermometer, Wifi, ShieldCheck, Smartphone, Tablet, Laptop, History, RotateCcw, CheckCircle2, Loader2, Lock, Sun, Moon } from "lucide-react";
 
@@ -109,7 +110,7 @@ function Index() {
         </header>
 
         <VaultAccess onAuthChange={setSignedIn} />
-        {signedIn ? <LocalBackupWorkspace /> : (
+        {signedIn ? <><LocalVaultConnection /><LocalBackupWorkspace /></> : (
           <p className="border-y border-border py-6 text-sm text-muted-foreground">Sign in with your email and Authy code to open the local backup workspace.</p>
         )}
 
