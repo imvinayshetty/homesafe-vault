@@ -93,7 +93,7 @@ export async function createVaultService(config) {
       reply(res, 404, { error: 'Unknown operation' });
     }).catch(async () => { if (authorizedActivity) await fail().catch(() => {}); if (!res.headersSent) reply(res, 400, { error: 'Request rejected; check pairing, file manifest, and storage. Existing backups are never replaced.' }); else res.destroy(); });
   };
-  const monitorServer = http.createServer((req, res) => { if (req.url === '/v1/ready' && !req.headers.origin) { void assertRoot().then(() => reply(res,200,{service:'homesafe-vault',driveReady:true})).catch(() => reply(res,503,{driveReady:false})); } else reply(res,404,{error:'Use the authenticated monitor socket'}); });
+  const monitorServer = http.createServer((req, res) => { if (req.url === '/v1/ready' && !req.headers.origin) { void assertRoot().then(() => reply(res,200,{service:'homesafe-vault',instanceId:config.instanceId,driveReady:true})).catch(() => reply(res,503,{driveReady:false})); } else reply(res,404,{error:'Use the authenticated monitor socket'}); });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
   monitorServer.on('upgrade', (req, socket, head) => {
     const address = req.socket.remoteAddress;
@@ -104,7 +104,7 @@ export async function createVaultService(config) {
         const v = JSON.parse(raw.toString());
         if (!authenticated) { if (v.type !== 'authenticate' || !equal(v.token, config.adminToken)) return ws.close(1008, 'Unauthorized'); authenticated = true; clearTimeout(timeout); send(ws, { type: 'service_ready' }); return; }
         if (v.type === 'select_destination' || v.type === 'reset') {
-          if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone) { monitors.add(ws); for (const e of history) send(ws, e); if (pairing && !history.length) send(ws, { type: 'pairing_code', ...pairing }); return; }
+          if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone && (selected?.email ?? '') === (v.email ?? '').toLowerCase()) { monitors.add(ws); for (const e of history) send(ws, e); if (pairing && !history.length) send(ws, { type: 'pairing_code', ...pairing }); return; }
           if ((active && !active.failed) || native.active()) throw new Error('A transfer is active');
           if (v.type === 'select_destination' && [...monitors].some(m => m !== ws && m.readyState === WebSocket.OPEN)) throw new Error('Another dashboard owns the selected destination');
           monitors.add(ws);

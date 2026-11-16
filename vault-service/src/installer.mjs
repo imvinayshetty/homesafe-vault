@@ -6,9 +6,10 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 const run = promisify(execFile);
-export async function driveReady(root) {
+export async function driveReady(root, expected) {
  const real = await fs.realpath(root), stat = await fs.lstat(root);
  if (stat.isSymbolicLink() || !stat.isDirectory() || path.basename(real)!=='HomeSafeBckup') throw new Error('Choose an existing real HomeSafeBckup folder on the connected drive');
+ if (expected && (stat.dev !== expected.dev || stat.ino !== expected.ino)) throw new Error('Original configured drive is not connected; no verification file was written');
  const probe = path.join(real, `.homesafe-check-${randomBytes(12).toString('hex')}`), payload=randomBytes(32);
  const h=await fs.open(probe, constants.O_CREAT|constants.O_EXCL|constants.O_RDWR|constants.O_NOFOLLOW,0o600);
  try { await h.writeFile(payload); await h.sync(); if (!(await fs.readFile(probe)).equals(payload)) throw new Error('Drive readback failed'); } finally { await h.close(); await fs.unlink(probe); }
@@ -42,14 +43,14 @@ export async function guidedInstall(stateDir) {
   const configPath=path.join(stateDir,'config.json'); try {await fs.access(configPath);throw new Error('Already configured; existing keys will not be replaced');} catch(e) {if(e.code!=='ENOENT') throw e;}
   const cert=path.join(stateDir,'vault.crt'),key=path.join(stateDir,'vault.key'); for(const f of [cert,key]) {try {await fs.access(f);throw new Error('Certificate exists; use manual recovery');}catch(e){if(e.code!=='ENOENT')throw e;}}
   await run('openssl',['req','-x509','-newkey','rsa:3072','-sha256','-nodes','-days','365','-keyout',key,'-out',cert,'-subj','/CN=HomeSafe Vault','-addext',`subjectAltName=IP:${ip}`]); await fs.chmod(key,0o600);
-  const check=await driveReady(drive.root); if(check.dev!==drive.dev||check.ino!==drive.ino) throw new Error('Drive changed during installation');
-  const config={root:drive.root,driveIdentity:{dev:drive.dev,ino:drive.ino},origins:[origin.origin],adminToken:randomBytes(32).toString('base64url'),identityKey:randomBytes(32).toString('base64'),cert,key,lanHost:ip};
+  await driveReady(drive.root, drive);
+  const config={root:drive.root,driveIdentity:{dev:drive.dev,ino:drive.ino},instanceId:randomBytes(16).toString('hex'),origins:[origin.origin],adminToken:randomBytes(32).toString('base64url'),identityKey:randomBytes(32).toString('base64'),cert,key,lanHost:ip};
   await fs.writeFile(configPath,JSON.stringify(config,null,2),{flag:'wx',mode:0o600});
   const cli=path.resolve(import.meta.dirname,'cli.mjs');
   if(startup) {
    if(process.platform==='linux') { const unitDir=path.join(os.homedir(),'.config/systemd/user'); await fs.mkdir(unitDir,{recursive:true}); const unit=path.join(unitDir,'homesafe-vault.service'); await fs.writeFile(unit,systemdUnit({node:process.execPath,cli,state:stateDir,root:drive.root}),{flag:'wx'}); await run('systemctl',['--user','daemon-reload']); await run('systemctl',['--user','enable','--now','homesafe-vault.service']); }
    else {const who=await run('whoami.exe',['/user','/fo','csv','/nh']);const sid=who.stdout.match(/S-1-5-[\d-]+/)?.[0];if(!sid)throw new Error('Cannot identify Windows startup user');const xml=path.join(stateDir,'startup.xml');await fs.writeFile(xml,'\ufeff'+windowsTask({node:process.execPath,cli,state:stateDir,sid}),'utf16le');await run('schtasks.exe',['/Create','/TN','HomeSafe Vault','/XML',xml]);await run('schtasks.exe',['/Run','/TN','HomeSafe Vault']);}
-   let ready=false; for(let i=0;i<30;i++){try {const r=await fetch('http://127.0.0.1:7878/v1/ready');const b=await r.json();if(r.ok&&b.driveReady){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,500));} if(!ready)throw new Error('Startup configured, but service readiness failed; run doctor and check the drive/startup logs');
+   let ready=false; for(let i=0;i<30;i++){try {const r=await fetch('http://127.0.0.1:7878/v1/ready', {signal:AbortSignal.timeout(2000)});const b=await r.json();if(r.ok&&b.driveReady&&b.instanceId===config.instanceId){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,500));} if(!ready)throw new Error('Startup configured, but this service did not become ready; run doctor and check the drive/startup logs');
   }
   const fingerprint=createHash('sha256').update(new X509Certificate(await fs.readFile(cert)).raw).digest('hex');
   console.log(`Setup complete. Phone address: https://${ip}:7879\nCertificate fingerprint: ${fingerprint}\n${startup?'Startup registered and drive/service verified.':'Run node src/cli.mjs start to start Vault.'}\nAllow port 7879 only on the private home network. Run node src/cli.mjs access for your private dashboard key.`);
