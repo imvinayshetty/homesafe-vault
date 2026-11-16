@@ -184,14 +184,19 @@ export function LocalBackupWorkspace() {
           {enrollment && <div className="space-y-3 text-sm"><p className="flex items-center gap-2 text-primary"><ShieldCheck className="h-4 w-4" />Encrypted browser identity verified</p><p className="break-all font-mono text-xs text-muted-foreground">{ROOT_FOLDER}/{enrollment.profile}/{enrollment.phone ?? "Legacy profile-level backups"}/</p>{enrollment.phone ? <Button variant={confirmed ? "secondary" : "outline"} disabled={busy || confirmed} onClick={() => { setConfirmed(true); window.__lovableEvents?.track?.("project.backup_profile_selected", {}); }}><Check />{confirmed ? "Destination confirmed" : "Confirm profile & phone folder"}</Button> : <p className="text-warning">Existing profile-level backups are read-only here. Create or reconnect a named phone folder for new backups; existing files stay untouched.</p>}</div>}
         </div>
         <div>
-          {enrollment?.phone && confirmed ? <TransferStatus profile={enrollment.profile} phone={enrollment.phone} /> : <p className="text-sm text-muted-foreground">Confirm your profile and phone folder to open the transfer dashboard.</p>}
+          {enrollment?.phone && confirmed ? <p className="text-sm text-primary">Transfer dashboard is open below.</p> : <p className="text-sm text-muted-foreground">Confirm your profile and phone folder to open the transfer dashboard.</p>}
         </div>
       </div>
       {storageProblem && <div role="alert" className="flex items-start gap-2 border-l-2 border-warning pl-3 text-sm text-warning"><AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" /><p>{storageWarning(storageProblem)}</p></div>}
       {error && <p role="alert" className="border-l-2 border-destructive pl-3 text-sm text-destructive">{error}</p>}
       {message && <p role="status" className="break-words text-sm text-primary">{message}</p>}
       {busy && <p role="status" className="text-sm text-muted-foreground">Accessing local storage… Keep this page open.</p>}
-      <StorageHealth catalog={catalog} connected={Boolean(enrollment)} problem={storageProblem} />
+      {enrollment?.phone && confirmed ? (
+        <div className="grid gap-6 lg:grid-cols-4">
+          <div className="lg:col-span-3"><TransferStatus profile={enrollment.profile} phone={enrollment.phone} /></div>
+          <div className="lg:col-span-1"><StorageHealth catalog={catalog} connected={Boolean(enrollment)} problem={storageProblem} compact /></div>
+        </div>
+      ) : <StorageHealth catalog={catalog} connected={Boolean(enrollment)} problem={storageProblem} />}
       <details className="border-t border-border pt-4 text-sm" open>
         <summary className="cursor-pointer font-medium">What Android &amp; iPhone can back up</summary>
         <dl className="mt-3 grid gap-4 sm:grid-cols-2">
