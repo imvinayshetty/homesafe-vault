@@ -21,7 +21,7 @@ export function TransferStatus({ profile, phone, accessKey = "" }: { profile: st
     stateRef.current = { stage: 0 }; setState({ stage: 0 }); setServiceError("");
     let ws: WebSocket | null = null; let retry: ReturnType<typeof setTimeout>; let stopped = false;
     const open = () => {
-      try { ws = new WebSocket(`${DAEMON_URL}?profile=${encodeURIComponent(profile)}&phone=${encodeURIComponent(phone)}`); } catch { setService("offline"); return; }
+      try { ws = new WebSocket(DAEMON_URL); } catch { setService("offline"); return; }
       socketRef.current = ws;
       ws.onopen = () => { ws?.send(JSON.stringify({ type: "authenticate", token: accessKey })); };
       ws.onclose = (event) => { setService("offline"); setPairing(null); if (event.code === 1008) setServiceError("Local access key was rejected. Disconnect and enter the key from your Vault service."); if (!stopped && event.code !== 1008) retry = setTimeout(open, 10000); };
@@ -36,7 +36,7 @@ export function TransferStatus({ profile, phone, accessKey = "" }: { profile: st
           setPairing({ code: e.code, expiresAt: Math.min(e.expiresAt, Date.now() + PAIRING_CODE_LIFETIME_MS) });
           return;
         }
-        if (e.type === "phone_connecting") setPairing(null);
+        if (e.type === "phone_connecting") { setPairing(null); if (stateRef.current.stage > 1) return; }
         const prev = stateRef.current; const next = applyDaemonEvent(prev, e, profile, phone);
         if (next === prev) return;
         stateRef.current = next; setState(next);

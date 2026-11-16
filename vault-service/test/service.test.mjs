@@ -32,6 +32,14 @@ test('real socket pairing and disk upload emit ordered progress; unauthorized mo
     assert.equal((await fs.readFile(path.join(f.root, 'Owner', 'Pixel', t.name, 'photos/example.jpg'))).toString(), bytes.toString()); assert.equal(JSON.parse(await fs.readFile(path.join(f.root, 'Owner', 'Pixel', t.name, '.homesafe-backup.json'))).complete, true);
     const log = await fs.readFile(path.join(f.temp, 'events.jsonl'), 'utf8'); assert.equal(log.includes('Owner'), false); assert.equal(log.includes(session.token), false);
     ws.send(JSON.stringify({ type: 'revoke_phone', profile: 'Owner', phone: 'Pixel' })); await wait(e => e.type === 'phone_revoked'); assert.equal(JSON.parse(await fs.readFile(path.join(f.temp, 'phones.json')))[0].revoked, true);
+    const other = new WebSocket(`ws://127.0.0.1:${service.monitorPort}/v1/transfer-events`, { origin: 'http://localhost:8080' }); const otherEvents = [];
+    other.on('message', raw => otherEvents.push(JSON.parse(raw.toString())));
+    await new Promise(r => other.once('open', r)); other.send(JSON.stringify({ type: 'authenticate', token: adminToken }));
+    for (let i = 0; i < 100 && !otherEvents.some(e => e.type === 'service_ready'); i++) await new Promise(r => setTimeout(r, 10));
+    assert.deepEqual(otherEvents.map(e => e.type), ['service_ready']);
+    other.send(JSON.stringify({ type: 'select_destination', profile: 'Other Owner', phone: 'Other Phone' }));
+    for (let i = 0; i < 100 && !otherEvents.some(e => e.type === 'service_error'); i++) await new Promise(r => setTimeout(r, 10));
+    assert.equal(otherEvents.some(e => e.type === 'service_error'), true); assert.equal(otherEvents.some(e => e.type === 'pairing_code' || e.type === 'pairing_verified'), false); other.terminate();
     const denied = new WebSocket(`ws://127.0.0.1:${service.monitorPort}/v1/transfer-events`, { origin: 'http://localhost:8080' }); await new Promise(r => denied.once('open', r)); denied.send(JSON.stringify({ type: 'authenticate', token: 'wrong' })); assert.equal(await new Promise(r => denied.once('close', r)), 1008);
   } finally { ws.terminate(); await service.close(); await fs.rm(f.temp, { recursive: true }); }
 });

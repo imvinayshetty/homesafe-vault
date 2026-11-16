@@ -94,10 +94,12 @@ export async function createVaultService(config) {
       const timeout = setTimeout(() => ws.close(1008, 'Authentication required'), 5000); let authenticated = false;
       ws.on('message', raw => { void serialize(async () => {
         const v = JSON.parse(raw.toString());
-        if (!authenticated) { if (v.type !== 'authenticate' || !equal(v.token, config.adminToken)) return ws.close(1008, 'Unauthorized'); authenticated = true; clearTimeout(timeout); monitors.add(ws); for (const e of history) send(ws, e); if (pairing) send(ws, { type: 'pairing_code', ...pairing }); send(ws, { type: 'service_ready' }); return; }
+        if (!authenticated) { if (v.type !== 'authenticate' || !equal(v.token, config.adminToken)) return ws.close(1008, 'Unauthorized'); authenticated = true; clearTimeout(timeout); send(ws, { type: 'service_ready' }); return; }
         if (v.type === 'select_destination' || v.type === 'reset') {
-          if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone) return;
+          if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone) { monitors.add(ws); for (const e of history) send(ws, e); if (pairing && !history.length) send(ws, { type: 'pairing_code', ...pairing }); return; }
           if (active && !active.failed) throw new Error('A transfer is active');
+          if (v.type === 'select_destination' && [...monitors].some(m => m !== ws && m.readyState === WebSocket.OPEN)) throw new Error('Another dashboard owns the selected destination');
+          monitors.add(ws);
           if (v.type === 'select_destination') selected = { profile: segment.parse(v.profile), phone: segment.parse(v.phone) };
           active = null; history = []; sessions.clear(); rotate(); await audit('profile_selected');
         }
