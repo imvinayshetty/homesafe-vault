@@ -6,6 +6,7 @@ import { randomBytes, randomInt, timingSafeEqual, createPublicKey, verify } from
 import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
 import { segment, enrollIdentity, verifyIdentity, createTransfer, receiveFile, finishTransfer } from './storage.mjs';
+import { createNativeProtocol } from './native-protocol.mjs';
 export const CODE_LIFETIME_MS = 30000;
 const token = () => randomBytes(32).toString('base64url');
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -15,6 +16,7 @@ export function validCode(pairing, code, now = Date.now()) { return Boolean(pair
 export async function createVaultService(config) {
   const root = await fs.realpath(config.root); // Must already exist: never silently recreate a disconnected mount.
   const rootStat = await fs.lstat(root);
+  if (config.driveIdentity && (rootStat.dev !== config.driveIdentity.dev || rootStat.ino !== config.driveIdentity.ino)) throw new Error('Configured drive changed; reconnect the original drive');
   if (!rootStat.isDirectory()) throw new Error('Select an existing HomeSafeBckup directory');
   const assertRoot = async () => { const s = await fs.lstat(root); if (!s.isDirectory() || s.isSymbolicLink() || s.dev !== rootStat.dev || s.ino !== rootStat.ino) throw new Error('Selected drive disconnected or changed'); };
   const key = Buffer.from(config.identityKey, 'base64');
@@ -40,6 +42,7 @@ export async function createVaultService(config) {
   const fail = async () => { if (active) active.failed = true; emit({ type: 'transfer_failed', reason: 'Local transfer failed. Check the drive and phone connection, then reconnect.' }); await audit('failure', 'transfer'); };
   const reply = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
   const body = async req => { let size = 0, chunks = []; for await (const c of req) { size += c.length; if (size > 2 * 1024 * 1024) throw new Error('Request too large'); chunks.push(c); } return JSON.parse(Buffer.concat(chunks).toString()); };
+  const native = createNativeProtocol({ root, key, selected: () => selected, pairing: () => pairing, consumeCode: () => { pairing = null; }, records: () => records, saveRecords: async next => { await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); records = next; }, emit, audit, assertRoot, validCode });
   const handler = (req, res) => {
     let authorizedActivity = false;
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -47,6 +50,11 @@ export async function createVaultService(config) {
     if (req.headers.origin) { reply(res, 403, { error: 'Native phone client required' }); return; }
     void serialize(async () => {
       const url = new URL(req.url, 'https://vault.local');
+      if (req.method === 'POST' && (['/v1/pair/begin', '/v1/pair/confirm', '/v1/device/challenge', '/v1/backup/start', '/v1/backup/chunk', '/v1/backup/finish'].includes(url.pathname) || (url.pathname === '/v1/backups' && !req.headers.authorization))) {
+        if (url.pathname === '/v1/pair/begin') { const ip = req.socket.remoteAddress, limit = attempts.get(ip); if (limit && limit.until > Date.now() && limit.count >= 5) return reply(res,429,{error:'Wait one minute'}); attempts.set(ip,{count:limit && limit.until>Date.now()?limit.count+1:1,until:limit && limit.until>Date.now()?limit.until:Date.now()+60000}); }
+        const v = url.pathname === '/v1/backup/chunk' ? {} : await body(req);
+        try { return reply(res,200,await native.handle(url.pathname,v,req)); } catch { if (native.ownsRequest(url.pathname,v,req)) await native.fail(); return reply(res,400,{error:'Native request rejected; check pairing, drive, and file selection'}); }
+      }
       if (req.method === 'GET' && url.pathname === '/v1/info') return reply(res, 200, { name: 'HomeSafe Vault', version: 1 });
       if (req.method === 'POST' && url.pathname === '/v1/challenge') {
         const ip = req.socket.remoteAddress, limit = attempts.get(ip);
@@ -73,7 +81,7 @@ export async function createVaultService(config) {
       authorizedActivity = true;
       await assertRoot();
       if (req.method === 'POST' && url.pathname === '/v1/backups') {
-        if (active || history.at(-1)?.type !== 'pairing_verified') return reply(res, 409, { error: 'Reconnect before starting another backup' });
+        if (active || native.active() || history.at(-1)?.type !== 'pairing_verified') return reply(res, 409, { error: 'Reconnect before starting another backup' });
         const t = await createTransfer(root, key, session.identity, await body(req));
         active = { ...t, id: token(), identity: session.identity, failed: false, lastActivity: Date.now() }; emit({ type: 'transfer_started' }); emit({ type: 'transfer_progress', files: 0, total: t.files.length }); await audit('transfer_started'); return reply(res, 201, { id: active.id, name: t.name });
       }
@@ -85,7 +93,7 @@ export async function createVaultService(config) {
       reply(res, 404, { error: 'Unknown operation' });
     }).catch(async () => { if (authorizedActivity) await fail().catch(() => {}); if (!res.headersSent) reply(res, 400, { error: 'Request rejected; check pairing, file manifest, and storage. Existing backups are never replaced.' }); else res.destroy(); });
   };
-  const monitorServer = http.createServer((req, res) => reply(res, 404, { error: 'Use the authenticated monitor socket' }));
+  const monitorServer = http.createServer((req, res) => { if (req.url === '/v1/ready' && !req.headers.origin) { void assertRoot().then(() => reply(res,200,{service:'homesafe-vault',driveReady:true})).catch(() => reply(res,503,{driveReady:false})); } else reply(res,404,{error:'Use the authenticated monitor socket'}); });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
   monitorServer.on('upgrade', (req, socket, head) => {
     const address = req.socket.remoteAddress;
@@ -97,10 +105,11 @@ export async function createVaultService(config) {
         if (!authenticated) { if (v.type !== 'authenticate' || !equal(v.token, config.adminToken)) return ws.close(1008, 'Unauthorized'); authenticated = true; clearTimeout(timeout); send(ws, { type: 'service_ready' }); return; }
         if (v.type === 'select_destination' || v.type === 'reset') {
           if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone) { monitors.add(ws); for (const e of history) send(ws, e); if (pairing && !history.length) send(ws, { type: 'pairing_code', ...pairing }); return; }
-          if (active && !active.failed) throw new Error('A transfer is active');
+          if ((active && !active.failed) || native.active()) throw new Error('A transfer is active');
           if (v.type === 'select_destination' && [...monitors].some(m => m !== ws && m.readyState === WebSocket.OPEN)) throw new Error('Another dashboard owns the selected destination');
           monitors.add(ws);
-          if (v.type === 'select_destination') selected = { profile: segment.parse(v.profile), phone: segment.parse(v.phone) };
+          native.reset();
+          if (v.type === 'select_destination') selected = { profile: segment.parse(v.profile), phone: segment.parse(v.phone), ...(v.email ? { email: z.string().email().max(254).parse(v.email).toLowerCase() } : {}) };
           active = null; history = []; sessions.clear(); rotate(); await audit('profile_selected');
         }
         if (v.type === 'revoke_phone') {
@@ -121,6 +130,6 @@ export async function createVaultService(config) {
   const listen = (server, port, host) => new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
   await listen(monitorServer, config.monitorPort ?? 7878, '127.0.0.1');
   try { await listen(lanServer, config.lanPort ?? 7879, config.testOnly ? '127.0.0.1' : config.lanHost ?? '0.0.0.0'); } catch (e) { monitorServer.close(); throw e; }
-  const timer = setInterval(() => { if (!pairing || pairing.expiresAt <= Date.now()) rotate(); if (active && !active.failed && Date.now() - active.lastActivity > 180000) { active.failed = true; void serialize(fail); } for (const [t, s] of sessions) if (s.expiresAt <= Date.now()) sessions.delete(t); for (const [t, c] of challenges) if (c.expiresAt <= Date.now()) challenges.delete(t); for (const [ip, a] of attempts) if (a.until <= Date.now()) attempts.delete(ip); }, 500);
+  const timer = setInterval(() => { if (!pairing || pairing.expiresAt <= Date.now()) rotate(); if (native.expired()) void serialize(() => native.fail()); if (active && !active.failed && Date.now() - active.lastActivity > 180000) { active.failed = true; void serialize(fail); } for (const [t, s] of sessions) if (s.expiresAt <= Date.now()) sessions.delete(t); for (const [t, c] of challenges) if (c.expiresAt <= Date.now()) challenges.delete(t); for (const [ip, a] of attempts) if (a.until <= Date.now()) attempts.delete(ip); }, 500);
   return { monitorPort: monitorServer.address().port, lanPort: lanServer.address().port, async close() { if (closed) return; closed = true; clearInterval(timer); for (const ws of wss.clients) ws.terminate(); await Promise.all([new Promise(r => monitorServer.close(r)), new Promise(r => lanServer.close(r))]); } };
 }

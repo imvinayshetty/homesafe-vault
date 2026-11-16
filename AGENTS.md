@@ -44,3 +44,5 @@ use the editor.
 - Keep the Node local companion in vault-service, outside the hosted app import graph; it owns native disk I/O and HTTPS phone uploads, while the dashboard uses an origin-checked, owner-key-authenticated loopback socket.
 - Keep native-service destinations separate from browser-enrolled phone folders; existing encrypted browser identities must not be silently migrated or replaced.
 - Record real backup activity only in the companion's bounded local event log; never send pairing or transfer analytics to cloud tracking.
+- Support HomeSafe's existing native signed begin/confirm and chunk protocol in a separate local adapter; never change the hosted app into a TLS or native-key proxy.
+- Guided installers use OS startup tools with argument arrays, protect local keys, and persist verified drive identity; startup must reject replaced drives rather than silently adopt them.

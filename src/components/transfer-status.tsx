@@ -9,7 +9,7 @@ export function transferSteps(profile: string, phone: string): string[] {
 }
 
 /** Stage advances only from events sent by the local Vault service over the loopback socket. */
-export function TransferStatus({ profile, phone, accessKey = "" }: { profile: string; phone: string; accessKey?: string }) {
+export function TransferStatus({ profile, phone, email = "", accessKey = "" }: { profile: string; phone: string; email?: string; accessKey?: string }) {
   const [state, setState] = useState<TransferState>({ stage: 0 });
   const [pairing, setPairing] = useState<PairingCode | null>(null);
   const [service, setService] = useState<"checking" | "online" | "offline">("checking");
@@ -28,7 +28,7 @@ export function TransferStatus({ profile, phone, accessKey = "" }: { profile: st
       ws.onmessage = (m) => {
         try {
           const message = JSON.parse(String(m.data));
-          if (message.type === "service_ready") { setService("online"); ws?.send(JSON.stringify({ type: "select_destination", profile, phone })); return; }
+          if (message.type === "service_ready") { setService("online"); ws?.send(JSON.stringify({ type: "select_destination", profile, phone, email })); return; }
           if (message.type === "service_error") { setServiceError(String(message.reason)); return; }
         } catch { return; }
         const e = parseDaemonEvent(m.data); if (!e) return;
@@ -45,7 +45,7 @@ export function TransferStatus({ profile, phone, accessKey = "" }: { profile: st
     };
     open();
     return () => { stopped = true; clearTimeout(retry); ws?.close(); };
-  }, [profile, phone, accessKey]);
+  }, [profile, phone, email, accessKey]);
   if (state.stage === 0 && !state.failed) return <><AwaitingCard service={service} profile={profile} phone={phone} pairing={pairing} />{serviceError && <p role="alert" className="text-sm text-destructive">{serviceError}</p>}</>;
   return <TransferScreen state={state} profile={profile} phone={phone} service={service} onClose={state.failed || state.stage === 5 ? () => { socketRef.current?.send(JSON.stringify({ type: "reset" })); stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
 }

@@ -4,6 +4,36 @@ Standalone Node.js 22+ companion for a Windows/Linux/macOS PC or Raspberry Pi OS
 
 ## Install and run
 
+### Guided setup (Windows PC or Raspberry Pi/Linux)
+
+Install Node.js 22+ and OpenSSL, download this repository, then open a terminal in `vault-service`:
+
+```sh
+npm install
+node src/cli.mjs install
+```
+
+The local wizard asks for an existing `HomeSafeBckup` folder, verifies a temporary write/read/delete without touching backups, shows real free space, and asks you to confirm the intended drive. It asks for your dashboard origin and private LAN IPv4 address, creates a private certificate/key and saved drive identity, then offers automatic startup. Windows uses a least-privilege owner-logon scheduled task; Linux/Pi uses a user systemd service. Startup is checked against the running service's drive-ready endpoint. No OS setup occurs in the hosted browser.
+
+For an unattended Pi, after setup explicitly run `sudo loginctl enable-linger <your-username>` to start the user service at boot without a login. Mount the drive through your OS before the service starts; use a stable mount/drive letter. A missing or changed drive causes a safe startup failure, not a fallback write. If the drive mounts late, start the user service again after mounting. Keep the repository in its installed location: startup refers to its absolute path.
+
+Run `node src/cli.mjs doctor` to repeat actual drive write/read verification, check certificate expiry, and confirm the service is ready. Existing settings and startup registrations are never silently replaced. If startup registration fails after configuration, keep the saved keys and use the manual start command; do not initialize again. The installer does not download Node/OpenSSL or change firewall/router settings. Windows and physical Raspberry Pi startup need hardware verification; tests here validate startup definitions and actual Linux drive checks.
+
+### Existing HomeSafe Android/iPhone app
+
+Vault now accepts the native plugin protocol found in the HomeSafe project: `/v1/pair/begin`, `/v1/pair/confirm`, `/v1/device/challenge`, `/v1/backups` (signed catalog), `/v1/backup/start`, `/v1/backup/chunk`, `/v1/backup/finish`. Both phone implementations use raw Ed25519 public keys and sorted JSON signatures, not the alternate DER/bearer API described below. Chunk SHA-256, exact offsets, encrypted identity, exclusive writes and final disk readback are enforced.
+
+Build/install the native HomeSafe app from its own project following its `MOBILE.md`; its browser preview cannot substitute. This chat cannot modify that project's code or install signed APK/IPA files. Do not run HomeSafe's separate Python service alongside this service on the same port. Use this Vault service on port 7879.
+
+1. Run the guided installer and start Vault. Sign into this dashboard with email/Authy.
+2. Under **Local Vault monitoring**, enter the same HomeSafe account email, profile, new phone folder name and local owner access key. The email is an owner-selected local identifier, not independent proof of email ownership.
+3. On the installed HomeSafe phone app, enter `https://<private LAN IP>:7879`, the certificate fingerprint printed by setup/start, and the live six-digit Vault code. Confirm the offered profile/phone on the phone. This consumes the code; the dashboard shows verified identity only after signed confirmation.
+4. Choose Full/Custom on HomeSafe, pick permitted files, and start. Phone chunks update the real Vault animation; completion occurs only after final disk readback. Returning native phones use fresh signed device challenges and the selected matching destination. Click Done on Vault before another transfer.
+
+Cross-project source was inspected read-only. Native-protocol socket/disk tests pass; physical Android/iPhone TLS pinning, app installation and complete phone-to-dashboard operation are not verified here. Automatic discovery and QR handoff remain unavailable; use manual IP/fingerprint/code pairing.
+
+### Manual setup
+
 1. Install Node.js 22 LTS or newer and download this repository to the Vault machine. Open a terminal in `vault-service`, then run `npm install` (or `bun install`).
 2. Mount your drive yourself and create its `HomeSafeBckup` folder. Do not use an automount path that silently falls back to your PC's system drive. The service rejects a changed/missing drive root; it never recreates it.
 3. Create a local TLS certificate outside the repository. With OpenSSL, for example:
@@ -23,7 +53,7 @@ node src/cli.mjs start
 
 On Windows substitute paths such as `E:\HomeSafeBckup` and `C:\Users\you\vault.crt`. `--state <absolute folder>` overrides the private settings directory for all commands. Initialization refuses to replace an existing configuration. Preserve this folder securely: losing its encryption key means existing identities cannot be verified. Do not put it on the shared drive or commit it.
 
-5. In a second local terminal, run `node src/cli.mjs access`. This deliberately displays the private owner access key; never share it with phones. Sign in to the dashboard with email/Authy, then enter this key plus a profile and phone name under **Local Vault monitoring**. The drive is the one configured at initialization; browser folder selection cannot change the service's destination.
+5. In a second local terminal, run `node src/cli.mjs access`. This deliberately displays the private owner access key; never share it with phones. Sign in to the dashboard with email/Authy, then enter this key plus HomeSafe email, profile and phone name under **Local Vault monitoring**. The drive is the one configured at initialization; browser folder selection cannot change the service's destination.
 6. Permit inbound TCP 7879 **only on the private home network**. Never forward this port through your router. Port 7878 is loopback-only and must not be exposed. Stop with Ctrl+C. After a crash, remove `service.lock` from the settings folder only after confirming no other Vault process exists.
 
 ### Raspberry Pi automatic startup
@@ -48,9 +78,9 @@ WantedBy=multi-user.target
 
 The service intentionally does not auto-restart after a crash while a stale lock exists. On Windows, use Task Scheduler at login with the same start command and working directory; do not run as administrator.
 
-## Phone integration contract (HomeSafe companion still required)
+## Alternate phone integration contract (for new native clients)
 
-The existing HomeSafe project has **not** been modified here. A native phone client must implement these operations before real phones can back up. Manual local IP connection is supported; automatic mDNS discovery, QR connection handoff and packaged native installers are not included. Browser-only mobile pages cannot securely substitute for a native key store and pinned TLS transport.
+The existing HomeSafe project has **not** been modified here; its supported existing protocol is documented above. The alternate API below is retained for new clients. Manual local IP connection is supported; automatic mDNS discovery, QR connection handoff and packaged native installers are not included. Browser-only mobile pages cannot securely substitute for a native key store and pinned TLS transport.
 
 - Connect to `https://<Vault LAN IP>:7879`. Pin the SHA-256 certificate fingerprint displayed by the local start command, verifying it with the owner outside this connection. Never disable certificate verification in a production phone client. A self-signed certificate requires explicit native pinning; it will not be trusted automatically.
 - Generate an Ed25519 device key in the phone's secure keystore; never send the private key. Retain that key across backups. The public key is base64-encoded DER SPKI.

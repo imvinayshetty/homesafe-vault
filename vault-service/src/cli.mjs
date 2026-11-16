@@ -3,10 +3,12 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomBytes, X509Certificate, createHash } from 'node:crypto';
 import { createVaultService } from './service.mjs';
+import { guidedInstall, driveReady } from './installer.mjs';
 const args = process.argv.slice(2);
 const option = name => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
 const stateDir = path.resolve(option('state') ?? path.join(os.homedir(), '.homesafe-vault'));
 async function main() {
+  if (args[0] === 'install') { await guidedInstall(stateDir); return; }
   if (args[0] === 'init') {
     const rootArg = option('root'), origin = option('origin'), cert = option('cert'), tlsKey = option('key');
     if (!rootArg || !origin || !cert || !tlsKey) throw new Error('Missing init options');
@@ -21,6 +23,7 @@ async function main() {
     console.log('Vault initialized. Run start; use access to retrieve the local dashboard access key.'); return;
   }
   const config = JSON.parse(await fs.readFile(path.join(stateDir, 'config.json'), 'utf8'));
+  if (args[0] === 'doctor') { const drive = await driveReady(config.root); if (config.driveIdentity && (drive.dev !== config.driveIdentity.dev || drive.ino !== config.driveIdentity.ino)) throw new Error('Original drive not connected'); console.log(`Drive write/read verification passed; ${(drive.availableBytes/1024**3).toFixed(1)} GiB free.`); const cert = new X509Certificate(await fs.readFile(config.cert)); if (Date.parse(cert.validTo) <= Date.now()) throw new Error('Certificate expired'); const r = await fetch('http://127.0.0.1:7878/v1/ready'); if (!r.ok || !(await r.json()).driveReady) throw new Error('Service unavailable'); console.log('Vault service running and selected drive ready.'); return; }
   if (args[0] === 'access') {
     // Explicit owner-only command, never a startup log or remote API response.
     process.stdout.write(`Local dashboard access key (keep private):\n${config.adminToken}\n`); return;
