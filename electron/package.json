@@ -1,13 +1,16 @@
 {
   "name": "homesafe-vault-desktop",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "main": "main.cjs",
   "scripts": {
     "start": "electron .",
-    "package:win": "cd ../vault-service && npm install --omit=dev && cd ../electron && electron-packager . \"HomeSafe Vault\" --platform=win32 --arch=x64 --out=release --overwrite --extra-resource=../vault-service",
-    "package:linux-arm64": "cd ../vault-service && npm install --omit=dev && cd ../electron && electron-packager . \"HomeSafe Vault\" --platform=linux --arch=arm64 --out=release --overwrite --extra-resource=../vault-service"
+    "build:dashboard": "cd .. && npm install && cross-env DESKTOP=1 vite build",
+    "prep": "npm run build:dashboard && cd ../vault-service && npm install --omit=dev",
+    "package:win": "npm run prep && electron-packager . \"HomeSafe Vault\" --platform=win32 --arch=x64 --out=release --overwrite --extra-resource=../vault-service --extra-resource=../dist/client --ignore=^/release && node rename-dashboard.cjs release/\"HomeSafe Vault-win32-x64\"/resources",
+    "package:mac": "npm run prep && electron-packager . \"HomeSafe Vault\" --platform=darwin --arch=arm64,x64 --out=release --overwrite --extra-resource=../vault-service --extra-resource=../dist/client --ignore=^/release && node rename-dashboard.cjs \"release/HomeSafe Vault-darwin-arm64/HomeSafe Vault.app/Contents/Resources\" && node rename-dashboard.cjs \"release/HomeSafe Vault-darwin-x64/HomeSafe Vault.app/Contents/Resources\"",
+    "package:linux-arm64": "npm run prep && electron-packager . \"HomeSafe Vault\" --platform=linux --arch=arm64 --out=release --overwrite --extra-resource=../vault-service --extra-resource=../dist/client --ignore=^/release && node rename-dashboard.cjs release/\"HomeSafe Vault-linux-arm64\"/resources"
   },
   "dependencies": { "selfsigned": "^2.4.1" },
-  "devDependencies": { "electron": "^33.0.0", "@electron/packager": "^18.3.6" }
+  "devDependencies": { "electron": "^33.0.0", "@electron/packager": "^18.3.6", "cross-env": "^7.0.3" }
 }

@@ -1,6 +1,7 @@
 // HomeSafe Vault desktop wrapper: starts the local Vault service automatically and
 // hands the owner access key only to the trusted dashboard window.
-const { app, BrowserWindow, dialog, ipcMain } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, protocol, net, shell } = require('electron');
+const { pathToFileURL } = require('node:url');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
@@ -8,7 +9,19 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
-const APP_URL = process.env.HOMESAFE_VAULT_URL || 'https://id-preview--a696d423-ba30-4f7c-939a-f9f23f0a344d.lovable.app';
+// The dashboard is bundled inside the app (dashboard/) and served from app://vault, so no public
+// address is needed. Only sign-in talks to the internet (cloud login).
+const APP_URL = process.env.HOMESAFE_VAULT_URL || 'app://vault/';
+const dashboardDir = app.isPackaged ? path.join(process.resourcesPath, 'dashboard') : path.join(__dirname, '..', 'dist', 'client');
+protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
+function serveDashboard() {
+  protocol.handle('app', req => {
+    const rel = decodeURIComponent(new URL(req.url).pathname).replace(/^\/+/, '');
+    let file = path.resolve(dashboardDir, rel || 'index.html');
+    if (!file.startsWith(dashboardDir) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) file = path.join(dashboardDir, 'index.html');
+    return net.fetch(pathToFileURL(file).toString());
+  });
+}
 const ORIGIN = new URL(APP_URL).origin;
 const stateDir = path.join(app.getPath('userData'), 'vault-service');
 const configPath = path.join(stateDir, 'config.json');
@@ -22,7 +35,11 @@ function lanIP() {
 }
 
 async function firstRunSetup() {
-  if (fs.existsSync(configPath)) return JSON.parse(await fsp.readFile(configPath, 'utf8'));
+  if (fs.existsSync(configPath)) {
+    const existing = JSON.parse(await fsp.readFile(configPath, 'utf8'));
+    if (!existing.origins.includes(ORIGIN)) { existing.origins = [ORIGIN]; await fsp.writeFile(configPath, JSON.stringify(existing, null, 2), { mode: 0o600 }); }
+    return existing;
+  }
   await dialog.showMessageBox({ type: 'info', title: 'HomeSafe Vault setup', message: 'Choose the HomeSafeBckup folder on your USB backup drive.', detail: 'This is a one-time step. Nothing is uploaded; backups stay on this drive.' });
   const pick = await dialog.showOpenDialog({ title: 'Select HomeSafeBckup folder', properties: ['openDirectory', 'createDirectory'] });
   if (pick.canceled || !pick.filePaths[0]) throw new Error('No backup folder selected');
@@ -50,6 +67,7 @@ function startService() {
 }
 
 async function boot() {
+  serveDashboard();
   app.setLoginItemSettings({ openAtLogin: true });
   let config;
   try { config = await firstRunSetup(); startService(); }
@@ -61,7 +79,7 @@ async function boot() {
   ipcMain.handle('vault:status', () => ({ running: !!service, error: service ? '' : lastError }));
   win = new BrowserWindow({ width: 1280, height: 860, title: 'HomeSafe Vault', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   win.webContents.on('will-navigate', (e, url) => { if (new URL(url).origin !== ORIGIN) e.preventDefault(); });
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.setWindowOpenHandler(({ url }) => { if (/^https:\/\//.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   win.loadURL(APP_URL);
 }
 

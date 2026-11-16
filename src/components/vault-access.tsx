@@ -80,7 +80,7 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     window.__lovableEvents?.track?.("project.account_flow_started", { flow: "registration" });
     const { error: signUpError } = await supabase.auth.signUp({
       email: email.trim(), password,
-      options: { emailRedirectTo: window.location.origin },
+      options: window.location.protocol === "app:" ? undefined : { emailRedirectTo: window.location.origin },
     });
     if (signUpError) throw signUpError;
     window.__lovableEvents?.track?.("project.account_step_completed", { flow: "registration", step: "account_submission" });
