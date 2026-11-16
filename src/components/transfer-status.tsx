@@ -37,7 +37,7 @@ export function TransferStatus({ profile, phone }: { profile: string; phone: str
   const steps = transferSteps(profile, phone);
   return (
     <div className="space-y-4" aria-live="polite">
-      <div className="flex items-center justify-between gap-2"><h3 className="flex items-center gap-2 font-medium"><Wifi className="h-4 w-4 text-primary" />Transfer status</h3><span className={`text-xs ${service === "online" ? "text-primary" : "text-muted-foreground"}`}>{service === "online" ? "Local Vault service connected" : service === "checking" ? "Looking for local Vault service…" : "Local Vault service not running"}</span></div>
+      <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1"><h3 className="flex shrink-0 items-center gap-2 font-medium"><Wifi className="h-4 w-4 text-primary" />Transfer status</h3><span className={`text-xs ${service === "online" ? "text-primary" : "text-muted-foreground"}`}>{service === "online" ? "Local Vault service connected" : service === "checking" ? "Looking for local Vault service…" : "Local Vault service not running"}</span></div>
       <ol className="space-y-1">
         {steps.map((label, i) => {
           const done = i < stage || (i === stage && (i === 2 || i === 5));
