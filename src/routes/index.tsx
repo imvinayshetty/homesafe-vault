@@ -32,6 +32,8 @@ function Index() {
   const [mounted, setMounted] = useState(true);
   const [light, setLight] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
+  const [monitorReady, setMonitorReady] = useState(false);
+  const [workspace, setWorkspace] = useState<"monitor" | "files">("monitor");
   const [showDemo, setShowDemo] = useState(false);
   const [devices, setDevices] = useState<Device[]>([
     { id: "1", name: "Vinay's Pixel 8", kind: "phone", last: "2 min ago" },
@@ -93,6 +95,7 @@ function Index() {
           <div className="order-first flex w-full justify-center md:order-none md:w-auto md:flex-1">
             <Button
               type="button"
+              variant="secondary"
               onClick={toggleTone}
               aria-label={light ? "Switch to dark mode" : "Switch to sage mode"}
               className="inline-flex min-h-11 items-center gap-2 rounded-full border border-border bg-secondary px-5 text-sm font-medium transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
@@ -102,20 +105,21 @@ function Index() {
             </Button>
           </div>
           <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-accent px-3 py-1.5 text-sm font-medium text-primary">
-              <ShieldCheck className="h-4 w-4" /> Backups stay local · Cloud sign-in only
-            </span>
             <span className="font-mono text-sm text-muted-foreground">{now?.toLocaleTimeString() ?? ""}</span>
           </div>
         </header>
 
         <VaultAccess onAuthChange={setSignedIn} />
-        {signedIn ? <><LocalVaultConnection /><LocalBackupWorkspace /></> : (
-          <p className="border-y border-border py-6 text-sm text-muted-foreground">Sign in with your email and Authy code to open the local backup workspace.</p>
-        )}
+        {signedIn && <>
+          {monitorReady && <nav aria-label="Vault workspace" className="flex flex-wrap gap-3 border-b border-border pb-4">
+            <Button variant={workspace === "monitor" ? "secondary" : "ghost"} onClick={() => setWorkspace("monitor")}>Monitoring</Button>
+            <Button variant={workspace === "files" ? "secondary" : "ghost"} onClick={() => setWorkspace("files")}>Saved backups</Button>
+          </nav>}
+          {workspace === "monitor" ? <LocalVaultConnection onReady={setMonitorReady} /> : <LocalBackupWorkspace />}
+        </>}
 
-        <Button variant="outline" onClick={() => setShowDemo(v => !v)}>{showDemo ? "Hide sample monitoring" : "Show sample monitoring"}</Button>
-        {showDemo && <>
+        {signedIn && monitorReady && <Button variant="outline" onClick={() => setShowDemo(v => !v)}>{showDemo ? "Hide sample monitoring" : "Show sample monitoring"}</Button>}
+        {signedIn && showDemo && <>
         <p className="text-xs text-warning">Sample vault monitoring below · drive, pairing, trusted devices and restore actions are demonstrations, not connected hardware.</p>
         <SampleTransfer />
         <section className="grid gap-4 md:grid-cols-3">

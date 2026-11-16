@@ -30,6 +30,7 @@ use the editor.
 <!-- LOVABLE:END -->
 
 ## Local backup boundaries
+- Present account access and local destination setup as replacing, focus-managed screens; expose monitoring controls only after the setup flow to prevent out-of-sequence actions.
 - Keep browser folder I/O and cryptographic enrollment in `src/lib/local-backup.ts`, invoked only from effects or user actions; the hosted runtime cannot access the owner's USB disk.
 - Persist directory handles and non-exportable device keys in IndexedDB, never cloud storage; this workflow must stay local and handles need explicit browser permission.
 - Treat browser enrollment as browser identity, not phone identity; native phone enrollment and LAN transfer require separate companion software and must never be simulated as verified phone access.
