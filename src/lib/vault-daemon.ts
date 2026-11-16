@@ -1,7 +1,10 @@
 /** Contract with the local Vault service (runs on the PC/Pi, never the cloud). */
 export const DAEMON_URL = "ws://127.0.0.1:7878/v1/transfer-events";
+export const PAIRING_CODE_LIFETIME_MS = 30_000;
+export interface PairingCode { code: string; expiresAt: number }
 
 export type DaemonEvent =
+  | { type: "pairing_code"; code: string; expiresAt: number }
   | { type: "phone_connecting" }
   | { type: "pairing_verified"; profile: string; phone: string }
   | { type: "transfer_started" }
@@ -16,6 +19,7 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent | null {
     const v = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (!v || typeof v !== "object" || typeof v.type !== "string") return null;
     switch (v.type) {
+      case "pairing_code": return typeof v.code === "string" && /^\d{6}$/.test(v.code) && Number.isFinite(v.expiresAt) ? { type: v.type, code: v.code, expiresAt: v.expiresAt } : null;
       case "phone_connecting": case "transfer_started": case "transfer_completed": return { type: v.type };
       case "pairing_verified": return typeof v.profile === "string" && typeof v.phone === "string" ? { type: v.type, profile: v.profile, phone: v.phone } : null;
       case "transfer_progress": return Number.isFinite(v.files) && Number.isFinite(v.total) && v.total > 0 ? { type: v.type, files: v.files, total: v.total } : null;
@@ -27,6 +31,7 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent | null {
 
 /** Advances only in order and only for the confirmed profile/phone; out-of-order events are ignored. */
 export function applyDaemonEvent(s: TransferState, e: DaemonEvent, profile: string, phone: string): TransferState {
+  if (e.type === "pairing_code") return s;
   if (e.type === "transfer_failed") return s.stage === 5 ? s : { ...s, failed: e.reason };
   if (s.failed || s.stage === 5) return e.type === "phone_connecting" ? { stage: 1 } : s;
   switch (e.type) {

@@ -1,50 +1,62 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Loader2, Smartphone, Wifi } from "lucide-react";
-import { DAEMON_URL, applyDaemonEvent, parseDaemonEvent, type TransferState } from "@/lib/vault-daemon";
+import { DAEMON_URL, PAIRING_CODE_LIFETIME_MS, applyDaemonEvent, parseDaemonEvent, type PairingCode, type TransferState } from "@/lib/vault-daemon";
+import { VaultPairingCode } from "@/components/vault-pairing-code";
 
 export function transferSteps(profile: string, phone: string): string[] {
   return ["Awaiting connection", "Establishing connection", `Code success verified for ${profile} ${phone}`, "Initiating Transfer", "Transfer in progress", "Backup Completed"];
 }
-const STAGE_NAMES = ["awaiting", "connecting", "verified", "initiating", "in_progress", "completed"] as const;
 
 /** Stage advances only from events sent by the local Vault service over the loopback socket. */
-export function TransferStatus({ profile, phone }: { profile: string; phone: string }) {
+export function TransferStatus({ profile, phone, email = "", accessKey = "" }: { profile: string; phone: string; email?: string; accessKey?: string }) {
   const [state, setState] = useState<TransferState>({ stage: 0 });
+  const [pairing, setPairing] = useState<PairingCode | null>(null);
   const [service, setService] = useState<"checking" | "online" | "offline">("checking");
   const stateRef = useRef(state);
+  const socketRef = useRef<WebSocket | null>(null);
+  const [serviceError, setServiceError] = useState("");
   useEffect(() => {
+    setPairing(null);
+    stateRef.current = { stage: 0 }; setState({ stage: 0 }); setServiceError("");
     let ws: WebSocket | null = null; let retry: ReturnType<typeof setTimeout>; let stopped = false;
     const open = () => {
-      try { ws = new WebSocket(`${DAEMON_URL}?profile=${encodeURIComponent(profile)}&phone=${encodeURIComponent(phone)}`); } catch { setService("offline"); return; }
-      ws.onopen = () => setService("online");
-      ws.onclose = () => { setService("offline"); if (!stopped) retry = setTimeout(open, 10000); };
+      try { ws = new WebSocket(DAEMON_URL); } catch { setService("offline"); return; }
+      socketRef.current = ws;
+      ws.onopen = () => { ws?.send(JSON.stringify({ type: "authenticate", token: accessKey })); };
+      ws.onclose = (event) => { setService("offline"); setPairing(null); if (event.code === 1008) setServiceError("Local access key was rejected. Disconnect and enter the key from your Vault service."); if (!stopped && event.code !== 1008) retry = setTimeout(open, 10000); };
       ws.onmessage = (m) => {
+        try {
+          const message = JSON.parse(String(m.data));
+          if (message.type === "service_ready") { setService("online"); ws?.send(JSON.stringify({ type: "select_destination", profile, phone, email })); return; }
+          if (message.type === "service_error") { setServiceError(String(message.reason)); return; }
+        } catch { return; }
         const e = parseDaemonEvent(m.data); if (!e) return;
+        if (e.type === "pairing_code") {
+          setPairing({ code: e.code, expiresAt: Math.min(e.expiresAt, Date.now() + PAIRING_CODE_LIFETIME_MS) });
+          return;
+        }
+        if (e.type === "phone_connecting") { setPairing(null); if (stateRef.current.stage > 1) return; }
         const prev = stateRef.current; const next = applyDaemonEvent(prev, e, profile, phone);
         if (next === prev) return;
         stateRef.current = next; setState(next);
-        const track = window.__lovableEvents?.track;
-        if (next.failed && !prev.failed) track?.("project.backup_transfer_failed", { stage: STAGE_NAMES[next.stage] });
-        else if (next.stage === 2 && prev.stage !== 2) track?.("project.phone_paired", {});
-        else if (next.stage === 3 && prev.stage !== 3) track?.("project.backup_transfer_started", {});
-        else if (next.stage === 5 && prev.stage !== 5) track?.("project.backup_transfer_completed", {});
+        // Activity is recorded locally by the service, not cloud analytics.
       };
     };
     open();
     return () => { stopped = true; clearTimeout(retry); ws?.close(); };
-  }, [profile, phone]);
-  if (state.stage === 0 && !state.failed) return <AwaitingCard service={service} profile={profile} phone={phone} />;
-  return <TransferScreen state={state} profile={profile} phone={phone} service={service} onClose={state.failed || state.stage === 5 ? () => { stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
+  }, [profile, phone, email, accessKey]);
+  if (state.stage === 0 && !state.failed) return <><AwaitingCard service={service} profile={profile} phone={phone} pairing={pairing} />{serviceError && <p role="alert" className="text-sm text-destructive">{serviceError}</p>}</>;
+  return <TransferScreen state={state} profile={profile} phone={phone} service={service} onClose={state.failed || state.stage === 5 ? () => { socketRef.current?.send(JSON.stringify({ type: "reset" })); stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
 }
 
 type Service = "checking" | "online" | "offline";
 const serviceLabel = (s: Service) => s === "online" ? "Local Vault service connected" : s === "checking" ? "Looking for local Vault service…" : "Local Vault service not running";
 
 /** Compact dashboard section shown while waiting for the phone. */
-export function AwaitingCard({ service, profile, phone, sample, action }: { service: Service; profile: string; phone: string; sample?: boolean; action?: ReactNode }) {
+export function AwaitingCard({ service, profile, phone, sample, action, pairing }: { service: Service; profile: string; phone: string; sample?: boolean; action?: ReactNode; pairing?: PairingCode | null }) {
   return (
-    <section aria-live="polite" className="flex flex-col items-center gap-5 rounded-2xl border border-border bg-card/60 p-6 text-center sm:flex-row sm:text-left">
+    <section className="flex flex-col items-center gap-5 rounded-2xl border border-border bg-card/60 p-6 text-center lg:flex-row lg:text-left">
       <div className="relative grid h-24 w-24 shrink-0 place-items-center">
         {[0, 1, 2].map(k => <span key={k} className="tx-ripple absolute inset-2 rounded-full border-2 border-primary" style={{ animationDelay: `${k * 0.8}s` }} />)}
         <span className="grid h-16 w-16 place-items-center rounded-full bg-accent"><Smartphone className="tx-float h-8 w-8 text-primary" /></span>
@@ -55,6 +67,7 @@ export function AwaitingCard({ service, profile, phone, sample, action }: { serv
         <p className="text-sm text-muted-foreground">Open the HomeSafe app on your phone and enter the Vault code. The transfer screen opens as soon as your phone connects.</p>
         <p className={`flex items-center justify-center gap-2 text-xs sm:justify-start ${service === "online" ? "text-primary" : "text-muted-foreground"}`}><span className={`h-2 w-2 rounded-full ${service === "online" ? "bg-primary pulse-dot" : "bg-muted-foreground"}`} />{serviceLabel(service)}</p>
       </div>
+      <VaultPairingCode sample={sample ?? false} pairing={pairing ?? null} />
       {action}
     </section>
   );

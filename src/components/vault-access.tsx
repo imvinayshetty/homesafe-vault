@@ -1,7 +1,8 @@
 import QRCode from "qrcode";
 import { useEffect, useState } from "react";
-import { Mail, KeyRound, Smartphone, QrCode, ShieldCheck, Loader2, LogOut, Copy, Check } from "lucide-react";
+import { Mail, Smartphone, ShieldCheck, Loader2, LogOut, Copy, Check, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { FlowScreen } from "@/components/flow-screen";
 import { supabase } from "@/integrations/supabase/client";
 
 type Stage =
@@ -15,6 +16,7 @@ const inputClass = "mt-2 min-h-11 w-full rounded-md border border-input bg-backg
 
 /** Cloud handles sign-in only; every backup file stays on local storage. */
 export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolean) => void }) {
+  const [enrollStep, setEnrollStep] = useState<"scan" | "pin">("scan");
   const [mode, setMode] = useState<"login" | "register">("login");
   const [stage, setStage] = useState<Stage>({ kind: "form" });
   const [email, setEmail] = useState("");
@@ -34,7 +36,7 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
       const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
       if (!active) return;
       if (aal?.currentLevel === "aal2") setStage({ kind: "signed-in", email: data.user.email ?? "" });
-      else setStage(await nextStep());
+      else { setEnrollStep("scan"); setStage(await nextStep()); }
     });
     const { data: sub } = supabase.auth.onAuthStateChange((event) => {
       if (event === "SIGNED_OUT") setStage({ kind: "form" });
@@ -64,27 +66,40 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     return { kind: "enroll", factorId: enroll.id, qr, secret: enroll.totp.secret, uri: enroll.totp.uri };
   }
 
-  async function run(work: () => Promise<void>) {
+  async function run(work: () => Promise<void>, flow?: "registration" | "sign_in", step?: "account_submission" | "password_verification" | "authy_verification") {
     setBusy(true); setError(""); setNotice("");
     try { await work(); }
-    catch (e) { setError(e instanceof Error ? e.message : "Something went wrong. Please try again."); }
+    catch (e) {
+      if (flow && step) window.__lovableEvents?.track?.("project.account_flow_failed", { flow, step });
+      setError(e instanceof Error ? e.message : "Something went wrong. Please try again.");
+    }
     finally { setBusy(false); }
   }
 
   const register = () => run(async () => {
+    window.__lovableEvents?.track?.("project.account_flow_started", { flow: "registration" });
     const { error: signUpError } = await supabase.auth.signUp({
       email: email.trim(), password,
       options: { emailRedirectTo: window.location.origin },
     });
     if (signUpError) throw signUpError;
+    window.__lovableEvents?.track?.("project.account_step_completed", { flow: "registration", step: "account_submission" });
     setStage({ kind: "confirm-email", email: email.trim() });
-  });
+  }, "registration", "account_submission");
 
   const login = () => run(async () => {
+    window.__lovableEvents?.track?.("project.account_flow_started", { flow: "sign_in" });
     const { error: signInError } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
     if (signInError) throw signInError;
-    setStage(await nextStep());
-  });
+    window.__lovableEvents?.track?.("project.account_step_completed", { flow: "sign_in", step: "password_verification" });
+    const next = await nextStep();
+    if (next.kind === "enroll") {
+      // Enrollment can resume in a later visit after email confirmation; count that entry separately.
+      window.__lovableEvents?.track?.("project.account_step_completed", { flow: "registration", step: "enrollment_ready" });
+    }
+    if (next.kind === "signed-in") window.__lovableEvents?.track?.("project.account_flow_completed", { flow: "sign_in" });
+    setEnrollStep("scan"); setStage(next);
+  }, "sign_in", "password_verification");
 
   const verifyToken = (factorId: string, after: Stage) => run(async () => {
     const { data: challenge, error: challengeError } = await supabase.auth.mfa.challenge({ factorId });
@@ -105,11 +120,19 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
       setScanned(false); setAccepted(false);
       const { data: u } = await supabase.auth.getUser();
       setStage({ kind: "signed-in", email: u.user?.email ?? email });
+      window.__lovableEvents?.track?.("project.account_step_completed", { flow: "registration", step: "authy_verification" });
+      window.__lovableEvents?.track?.("project.account_flow_completed", { flow: "registration" });
+      window.__lovableEvents?.track?.("project.account_flow_completed", { flow: "sign_in" });
       setNotice("Authy is now protecting your Vault account.");
     } else {
-      setStage(await nextStep());
+      const next = await nextStep();
+      if (next.kind === "signed-in") {
+        window.__lovableEvents?.track?.("project.account_step_completed", { flow: "sign_in", step: "authy_verification" });
+        window.__lovableEvents?.track?.("project.account_flow_completed", { flow: "sign_in" });
+      }
+      setEnrollStep("scan"); setStage(next);
     }
-  });
+  }, after.kind === "enroll" ? "registration" : "sign_in", "authy_verification");
 
   const signOut = () => run(async () => {
     await supabase.auth.signOut();
@@ -123,96 +146,49 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     setCopied(true); setTimeout(() => setCopied(false), 2000);
   };
 
-  return (
-    <section className="space-y-5 border-t border-border py-6" aria-labelledby="vault-access-heading">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 id="vault-access-heading" className="font-display text-2xl">Your Vault account</h2>
-        <span className="flex items-center gap-2 rounded-full border border-primary/40 bg-accent px-3 py-1.5 text-sm font-medium text-primary">
-          <ShieldCheck className="h-4 w-4" />Only sign-in is cloud-based · backups stay local
-        </span>
+  if (stage.kind === "signed-in") return <section className="flex flex-wrap items-center justify-between gap-4 border-b border-border py-4">
+    <p className="flex min-w-0 flex-wrap items-center gap-2 text-sm"><ShieldCheck className="h-4 w-4 shrink-0 text-primary" /><span className="break-all">{stage.email}</span><span className="text-muted-foreground">Authy verified</span></p>
+    <Button variant="ghost" disabled={busy} onClick={() => void signOut()}><LogOut />Sign out</Button>
+    {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+  </section>;
+
+  const title = stage.kind === "form" ? (mode === "login" ? "Welcome back" : "Create your Vault account") : stage.kind === "confirm-email" ? "Check your email" : stage.kind === "challenge" ? "Verify with Authy" : enrollStep === "scan" ? "Connect Authy" : "Confirm your Authy code";
+  const eyebrow = stage.kind === "form" ? (mode === "login" ? "Sign in · Step 1 of 2" : "Registration · Step 1 of 4") : stage.kind === "confirm-email" ? "Registration · Step 2 of 4" : stage.kind === "challenge" ? "Sign in · Step 2 of 2" : enrollStep === "scan" ? "Setup · Step 3 of 4" : "Setup · Step 4 of 4";
+  return <FlowScreen key={`${stage.kind}-${stage.kind === "enroll" ? enrollStep : mode}`} title={title} eyebrow={eyebrow}>
+    {stage.kind === "form" ? <>
+      <div role="tablist" aria-label="Vault account access" className="grid grid-cols-2 gap-2 border-b border-border pb-4">
+        <Button role="tab" aria-selected={mode === "login"} disabled={busy} variant={mode === "login" ? "secondary" : "ghost"} className="h-auto min-h-12 whitespace-normal" onClick={() => { setMode("login"); setError(""); setPassword(""); }}>Returning user</Button>
+        <Button role="tab" aria-selected={mode === "register"} disabled={busy} variant={mode === "register" ? "secondary" : "ghost"} className="h-auto min-h-12 whitespace-normal" onClick={() => { setMode("register"); setError(""); setPassword(""); }}>First-time registration</Button>
       </div>
-
-      {stage.kind === "signed-in" ? (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-secondary/50 p-4">
-          <p className="flex items-center gap-2 text-sm"><ShieldCheck className="h-4 w-4 text-primary" />Signed in as <span className="font-medium">{stage.email}</span> · verified with Authy</p>
-          <Button variant="outline" className="min-h-11" disabled={busy} onClick={() => void signOut()}><LogOut />Sign out</Button>
-        </div>
-      ) : stage.kind === "confirm-email" ? (
-        <div className="space-y-2 rounded-lg border border-border bg-secondary/50 p-4 text-sm">
-          <p className="flex items-center gap-2 font-medium"><Mail className="h-4 w-4 text-primary" />Check your email</p>
-          <p className="text-muted-foreground">We sent a confirmation link to <span className="font-medium text-foreground">{stage.email}</span>. Open it, then come back and sign in to set up Authy.</p>
-          <Button variant="outline" className="min-h-11" onClick={() => { setMode("login"); setStage({ kind: "form" }); }}>Back to sign in</Button>
-        </div>
-      ) : stage.kind === "enroll" ? (
-        <div className="grid gap-8 lg:grid-cols-2">
-          <div className="space-y-4">
-            <h3 className="flex items-center gap-2 font-medium"><QrCode className="h-4 w-4 text-primary" />Set up Authy</h3>
-            <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
-              <li>Open Authy, tap <span className="font-medium text-foreground">+ Add account</span>, then <span className="font-medium text-foreground">Scan QR code</span>.</li>
-              <li>Point the camera at the code on this screen.</li>
-              <li>Type the 6-digit code Authy shows to finish.</li>
-            </ol>
-            <div className="flex justify-center rounded-xl bg-card p-2 lg:hidden"><img src={stage.qr} alt="Authy setup QR code" width={240} height={240} className="h-60 w-60 rounded-md" /></div>
-            <a href={stage.uri} className="inline-flex min-h-11 items-center gap-2 rounded-md border border-border px-4 text-sm font-medium hover:bg-accent lg:hidden"><Smartphone className="h-4 w-4" />On this phone? Open in Authy</a>
-            <details className="rounded-md border border-border p-3 text-sm">
-              <summary className="cursor-pointer text-muted-foreground">Can't scan? Enter a setup key instead</summary>
-              <div className="mt-3 flex items-center gap-2 rounded-md bg-background p-3 font-mono text-sm">
-                <span className="break-all">{stage.secret}</span>
-                <Button variant="ghost" size="icon" aria-label="Copy setup key" onClick={() => void copySecret()}>{copied ? <Check className="h-4 w-4 text-primary" /> : <Copy className="h-4 w-4" />}</Button>
-              </div>
-              <p className="mt-2 text-xs text-muted-foreground">In Authy choose "Enter key manually" and paste this key.</p>
-            </details>
-            <fieldset className="space-y-2 rounded-md border border-border p-3 text-sm">
-              <legend className="px-1 font-medium">Setup check</legend>
-              <label className="flex min-h-11 items-center gap-3"><input type="checkbox" className="h-5 w-5 accent-primary" checked={scanned} onChange={e => { setScanned(e.target.checked); if (!e.target.checked) setAccepted(false); }} />1. The QR code opened in Authy</label>
-              <label className={`flex min-h-11 items-center gap-3 ${scanned ? "" : "opacity-50"}`}><input type="checkbox" className="h-5 w-5 accent-primary" disabled={!scanned} checked={accepted} onChange={e => setAccepted(e.target.checked)} />2. Authy saved the "HomeSafe Vault" account</label>
-              <p className={`flex items-center gap-3 ${accepted ? "" : "opacity-50"}`}><span className="flex h-5 w-5 items-center justify-center rounded-full border border-border text-xs">3</span>Enter the 6-digit PIN Authy generates</p>
-            </fieldset>
-            <label className="block text-sm">Authy code
-              <input value={token} onChange={e => setToken(e.target.value.replace(/\D/g, "").slice(0, 6))} disabled={!accepted} inputMode="numeric" autoComplete="one-time-code" placeholder={accepted ? "6-digit code" : "Complete steps 1 and 2 first"} className={inputClass} />
-            </label>
-            <p className="text-xs text-muted-foreground">Registration is marked complete only after Vault confirms this PIN.</p>
-            <Button className="min-h-11" disabled={busy || !accepted || token.trim().length !== 6} onClick={() => void verifyToken(stage.factorId, stage)}>
-              {busy ? <Loader2 className="animate-spin" /> : <KeyRound />}Verify &amp; finish setup
-            </Button>
-          </div>
-          <div className="hidden items-start justify-center lg:flex"><img src={stage.qr} alt="Authy setup QR code" width={320} height={320} className="h-80 w-80 rounded-lg" /></div>
-        </div>
-      ) : stage.kind === "challenge" ? (
-        <div className="max-w-md space-y-4">
-          <h3 className="flex items-center gap-2 font-medium"><Smartphone className="h-4 w-4 text-primary" />Enter your Authy code</h3>
-          <label className="block text-sm">Authy code
-            <input value={token} onChange={e => setToken(e.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code" className={inputClass} autoFocus />
-          </label>
-          <Button className="min-h-11" disabled={busy || token.trim().length < 6} onClick={() => void verifyToken(stage.factorId, stage)}>
-            {busy ? <Loader2 className="animate-spin" /> : <KeyRound />}Verify &amp; sign in
-          </Button>
-        </div>
-      ) : (
-        <div className="max-w-md space-y-4">
-          <div role="tablist" aria-label="Vault account access" className="flex gap-2">
-            <Button role="tab" aria-selected={mode === "login"} variant={mode === "login" ? "secondary" : "ghost"} onClick={() => { setMode("login"); setError(""); }}>Returning user</Button>
-            <Button role="tab" aria-selected={mode === "register"} variant={mode === "register" ? "secondary" : "ghost"} onClick={() => { setMode("register"); setError(""); }}>First-time registration</Button>
-          </div>
-          <div role="tabpanel" aria-label={mode === "login" ? "Returning user" : "First-time registration"} className="space-y-3">
-            <div className="flex items-center gap-2 font-medium"><Mail className="h-4 w-4 text-primary" />{mode === "login" ? "Sign in to your Vault" : "Register on this Vault"}</div>
-            <label className="block text-sm">Email address
-              <input type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" className={inputClass} />
-            </label>
-            <label className="block text-sm">Password
-              <input type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} placeholder={mode === "register" ? "Choose a password (6+ characters)" : "Your password"} className={inputClass} />
-            </label>
-            <Button className="min-h-11" disabled={busy || !email.trim() || password.length < 6} onClick={() => void (mode === "login" ? login() : register())}>
-              {busy ? <Loader2 className="animate-spin" /> : <KeyRound />}{mode === "login" ? "Sign in" : "Register"}
-            </Button>
-            <p className="text-xs text-muted-foreground">{mode === "login" ? "After your password, you'll enter the 6-digit code from Authy." : "After confirming your email, you'll set up Authy as your second factor."}</p>
-          </div>
-        </div>
-      )}
-
-      {error && <p role="alert" className="border-l-2 border-destructive pl-3 text-sm text-destructive">{error}</p>}
-      {notice && <p role="status" className="text-sm text-primary">{notice}</p>}
-      <p className="text-xs text-muted-foreground">Your email, password and Authy secret are handled by the cloud sign-in service only. Backup files, folder names and drive contents never leave your local storage. Phone pairing over home Wi-Fi still requires the local Vault service and HomeSafe phone app.</p>
-    </section>
-  );
+      <form className="space-y-6" onSubmit={e => { e.preventDefault(); if (!busy && email.trim() && password.length >= 6) void (mode === "login" ? login() : register()); }}>
+        <label className="block text-sm">Email address<input required type="email" disabled={busy} value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" className={inputClass} /></label>
+        <label className="block text-sm">Password<input required minLength={6} disabled={busy} type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} className={inputClass} /></label>
+        <Button type="submit" className="min-h-12 w-full" disabled={busy || !email.trim() || password.length < 6}>{busy ? <Loader2 className="animate-spin" /> : <ArrowRight />}{mode === "login" ? "Continue to Authy" : "Create account"}</Button>
+      </form>
+    </> : stage.kind === "confirm-email" ? <>
+      <Mail className="h-10 w-10 text-primary" />
+      <p className="text-muted-foreground">Open the confirmation link sent to <span className="break-all font-medium text-foreground">{stage.email}</span>.</p>
+      <Button className="min-h-12 w-full" onClick={() => { setMode("login"); setPassword(""); setStage({ kind: "form" }); }}>Continue to sign in<ArrowRight /></Button>
+    </> : stage.kind === "enroll" && enrollStep === "scan" ? <>
+      <p className="text-sm text-muted-foreground">In Authy, choose Add account, then Scan QR code.</p>
+      <div className="flex justify-center"><img src={stage.qr} alt="Authy setup QR code" width={280} height={280} className="aspect-square w-full max-w-[280px] rounded-md" /></div>
+      <a href={stage.uri} className="flex min-h-11 items-center justify-center gap-2 rounded-md border border-border text-sm hover:bg-accent"><Smartphone className="h-4 w-4" />Open in Authy on this phone</a>
+      <details className="border-b border-border pb-4 text-sm"><summary className="cursor-pointer text-muted-foreground">Can't scan? Use a setup key</summary><div className="mt-3 flex items-center gap-2"><span className="break-all font-mono">{stage.secret}</span><Button variant="ghost" size="icon" aria-label="Copy setup key" onClick={() => void copySecret()}>{copied ? <Check /> : <Copy />}</Button></div></details>
+      <fieldset className="space-y-3 text-sm"><legend className="sr-only">Confirm Authy setup</legend>
+        <label className="flex min-h-11 items-center gap-3"><input type="checkbox" checked={scanned} className="h-5 w-5 accent-primary" onChange={e => { setScanned(e.target.checked); if (!e.target.checked) setAccepted(false); }} />The QR code opened in Authy</label>
+        <label className="flex min-h-11 items-center gap-3"><input type="checkbox" checked={accepted} disabled={!scanned} className="h-5 w-5 accent-primary" onChange={e => setAccepted(e.target.checked)} />Authy saved my Vault account</label>
+      </fieldset>
+      <Button className="min-h-12 w-full" disabled={!scanned || !accepted} onClick={() => { setToken(""); setError(""); setEnrollStep("pin"); window.__lovableEvents?.track?.("project.account_step_completed", { flow: "registration", step: "authy_setup_confirmed" }); }}>Continue to verification<ArrowRight /></Button>
+    </> : stage.kind === "enroll" || stage.kind === "challenge" ? <>
+      <Smartphone className="h-10 w-10 text-primary" />
+      <p className="text-sm text-muted-foreground">Enter the current six-digit code for your Vault account in Authy.</p>
+      <form className="space-y-6" onSubmit={e => { e.preventDefault(); if (!busy && token.length === 6) void verifyToken(stage.factorId, stage); }}>
+        <label className="block text-sm">Authy code<input disabled={busy} required pattern="[0-9]{6}" value={token} onChange={e => setToken(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="000000" className={`${inputClass} text-center font-mono text-2xl`} /></label>
+        <Button type="submit" className="min-h-12 w-full" disabled={busy || token.length !== 6}>{busy ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{stage.kind === "enroll" ? "Verify & finish setup" : "Verify & open Vault"}</Button>
+      </form>
+      <Button variant="ghost" disabled={busy} className="w-full" onClick={() => { setError(""); setToken(""); if (stage.kind === "enroll") setEnrollStep("scan"); else void signOut(); }}>{stage.kind === "enroll" ? "Back to Authy setup" : "Use a different account"}</Button>
+    </> : null}
+    {error && <p role="alert" className="border-l-2 border-destructive pl-3 text-sm text-destructive">{error}</p>}
+    {notice && <p role="status" className="text-sm text-primary">{notice}</p>}
+  </FlowScreen>;
 }

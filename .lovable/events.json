@@ -1,6 +1,122 @@
 {
   "schema_version": 1,
   "events": {
+    "project.account_flow_completed": {
+      "event_schema_version": 1,
+      "description": "Registration finished with backend-confirmed verified Authy factor and AAL2, or sign-in reached an AAL2 session; restored sessions do not emit completion.",
+      "privacy": {
+        "contains_pii": false,
+        "purpose": "product_analytics"
+      },
+      "properties_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "flow"
+        ],
+        "properties": {
+          "flow": {
+            "type": "string",
+            "enum": [
+              "registration",
+              "sign_in"
+            ]
+          }
+        }
+      }
+    },
+    "project.account_flow_failed": {
+      "event_schema_version": 1,
+      "description": "An account action failed at a fixed milestone; contains no error text, account identifier or credentials. Failure is not counted as abandonment.",
+      "privacy": {
+        "contains_pii": false,
+        "purpose": "product_analytics"
+      },
+      "properties_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "flow",
+          "step"
+        ],
+        "properties": {
+          "flow": {
+            "type": "string",
+            "enum": [
+              "registration",
+              "sign_in"
+            ]
+          },
+          "step": {
+            "type": "string",
+            "enum": [
+              "account_submission",
+              "password_verification",
+              "authy_verification"
+            ]
+          }
+        }
+      }
+    },
+    "project.account_flow_started": {
+      "event_schema_version": 1,
+      "description": "A valid registration or sign-in form was submitted; repeated attempts count as retries.",
+      "privacy": {
+        "contains_pii": false,
+        "purpose": "product_analytics"
+      },
+      "properties_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "flow"
+        ],
+        "properties": {
+          "flow": {
+            "type": "string",
+            "enum": [
+              "registration",
+              "sign_in"
+            ]
+          }
+        }
+      }
+    },
+    "project.account_step_completed": {
+      "event_schema_version": 1,
+      "description": "An account milestone succeeded. Enrollment may resume in another visit after email confirmation; absent subsequent steps indicate visit-level drop-off, not confirmed abandonment.",
+      "privacy": {
+        "contains_pii": false,
+        "purpose": "product_analytics"
+      },
+      "properties_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "flow",
+          "step"
+        ],
+        "properties": {
+          "flow": {
+            "type": "string",
+            "enum": [
+              "registration",
+              "sign_in"
+            ]
+          },
+          "step": {
+            "type": "string",
+            "enum": [
+              "account_submission",
+              "password_verification",
+              "enrollment_ready",
+              "authy_setup_confirmed",
+              "authy_verification"
+            ]
+          }
+        }
+      }
+    },
     "project.backup_profile_selected": {
       "event_schema_version": 1,
       "description": "Owner confirmed a profile and phone folder as backup destination.",

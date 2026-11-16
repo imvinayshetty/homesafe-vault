@@ -3,8 +3,9 @@ import { useEffect, useState } from "react";
 import { LocalBackupWorkspace } from "@/components/local-backup-workspace";
 import { VaultAccess } from "@/components/vault-access";
 import { SampleTransfer } from "@/components/sample-transfer";
+import { LocalVaultConnection } from "@/components/local-vault-connection";
 import { Button } from "@/components/ui/button";
-import { HardDrive, Thermometer, Wifi, ShieldCheck, KeyRound, Smartphone, Tablet, Laptop, History, RotateCcw, CheckCircle2, Loader2, Lock, Sun, Moon } from "lucide-react";
+import { HardDrive, Thermometer, Wifi, ShieldCheck, Smartphone, Tablet, Laptop, History, RotateCcw, CheckCircle2, Loader2, Lock, Sun, Moon } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -23,17 +24,16 @@ export const Route = createFileRoute("/")({
 type Device = { id: string; name: string; kind: "phone" | "tablet" | "laptop"; last: string };
 type Snap = { id: string; date: string; size: string; files: number; state: "idle" | "checking" | "valid" | "restoring" | "restored" };
 
-const newPin = () => String(Math.floor(Math.random() * 1e6)).padStart(6, "0");
 const icons = { phone: Smartphone, tablet: Tablet, laptop: Laptop };
 
 function Index() {
   const [now, setNow] = useState<Date | null>(null);
-  const [pin, setPin] = useState("------");
-  const [left, setLeft] = useState(30);
   const [temp, setTemp] = useState(38.4);
   const [mounted, setMounted] = useState(true);
   const [light, setLight] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
+  const [monitorReady, setMonitorReady] = useState(false);
+  const [workspace, setWorkspace] = useState<"monitor" | "files">("monitor");
   const [showDemo, setShowDemo] = useState(false);
   const [devices, setDevices] = useState<Device[]>([
     { id: "1", name: "Vinay's Pixel 8", kind: "phone", last: "2 min ago" },
@@ -47,7 +47,7 @@ function Index() {
   );
 
   useEffect(() => {
-    setPin(newPin()); setNow(new Date());
+    setNow(new Date());
     const html = document.documentElement;
     const saved = localStorage.getItem("theme");
     const initial = saved ?? (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
@@ -64,7 +64,6 @@ function Index() {
     const t = setInterval(() => {
       setNow(new Date());
       setTemp((x) => Math.min(46, Math.max(34, x + (Math.random() - 0.5) * 0.6)));
-      setLeft((l) => { if (l <= 1) { setPin(newPin()); return 30; } return l - 1; });
     }, 1000);
     return () => { clearInterval(t); mq.removeEventListener("change", onChange); };
   }, []);
@@ -96,6 +95,7 @@ function Index() {
           <div className="order-first flex w-full justify-center md:order-none md:w-auto md:flex-1">
             <Button
               type="button"
+              variant="secondary"
               onClick={toggleTone}
               aria-label={light ? "Switch to dark mode" : "Switch to sage mode"}
               className="inline-flex min-h-11 items-center gap-2 rounded-full border border-border bg-secondary px-5 text-sm font-medium transition-colors hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
@@ -105,20 +105,21 @@ function Index() {
             </Button>
           </div>
           <div className="flex items-center gap-2">
-            <span className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-accent px-3 py-1.5 text-sm font-medium text-primary">
-              <ShieldCheck className="h-4 w-4" /> Backups stay local · Cloud sign-in only
-            </span>
             <span className="font-mono text-sm text-muted-foreground">{now?.toLocaleTimeString() ?? ""}</span>
           </div>
         </header>
 
         <VaultAccess onAuthChange={setSignedIn} />
-        {signedIn ? <LocalBackupWorkspace /> : (
-          <p className="border-y border-border py-6 text-sm text-muted-foreground">Sign in with your email and Authy code to open the local backup workspace.</p>
-        )}
+        {signedIn && <>
+          {monitorReady && <nav aria-label="Vault workspace" className="flex flex-wrap gap-3 border-b border-border pb-4">
+            <Button variant={workspace === "monitor" ? "secondary" : "ghost"} onClick={() => setWorkspace("monitor")}>Monitoring</Button>
+            <Button variant={workspace === "files" ? "secondary" : "ghost"} onClick={() => setWorkspace("files")}>Saved backups</Button>
+          </nav>}
+          {workspace === "monitor" ? <LocalVaultConnection onReady={setMonitorReady} /> : <LocalBackupWorkspace />}
+        </>}
 
-        <Button variant="outline" onClick={() => setShowDemo(v => !v)}>{showDemo ? "Hide sample monitoring" : "Show sample monitoring"}</Button>
-        {showDemo && <>
+        {signedIn && monitorReady && <Button variant="outline" onClick={() => setShowDemo(v => !v)}>{showDemo ? "Hide sample monitoring" : "Show sample monitoring"}</Button>}
+        {signedIn && showDemo && <>
         <p className="text-xs text-warning">Sample vault monitoring below · drive, pairing, trusted devices and restore actions are demonstrations, not connected hardware.</p>
         <SampleTransfer />
         <section className="grid gap-4 md:grid-cols-3">
@@ -158,21 +159,8 @@ function Index() {
           </div>
         </section>
 
-        <section className="grid gap-4 md:grid-cols-5">
-          <div className="panel glow md:col-span-2">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground"><KeyRound className="h-4 w-4" /> Code for pairing a phone</div>
-            <div className="mt-5 flex justify-center gap-2">
-              {pin.split("").map((d, i) => (
-                <span key={i} className="grid h-14 w-11 place-items-center rounded-lg border border-border bg-secondary font-mono text-2xl font-semibold text-primary">{d}</span>
-              ))}
-            </div>
-            <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-muted">
-              <div className="h-full bg-primary transition-all duration-1000 ease-linear" style={{ width: `${(left / 30) * 100}%` }} />
-            </div>
-            <p className="mt-2 text-center text-xs text-muted-foreground">Fresh code in {left}s · enter it in HomeSafe on your phone</p>
-          </div>
-
-          <div className="panel md:col-span-3">
+        <section>
+          <div className="panel">
             <div className="flex items-center justify-between">
               <h2 className="font-semibold">Trusted devices</h2>
               <span className="text-xs text-muted-foreground">{devices.length} trusted</span>

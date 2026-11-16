@@ -1,0 +1,20 @@
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, it, vi } from "vitest";
+import { LocalVaultConnection } from "@/components/local-vault-connection";
+vi.mock("@/components/transfer-status", () => ({ TransferStatus: () => null }));
+afterEach(cleanup);
+it("cannot open monitoring before selecting a destination and providing a valid service key", () => {
+  const ready = vi.fn();
+  render(<LocalVaultConnection onReady={ready} />);
+  expect(ready).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("HomeSafe account email"), { target: { value: "owner@example.test" } });
+  fireEvent.change(screen.getByLabelText("Profile name"), { target: { value: "Owner" } });
+  fireEvent.change(screen.getByLabelText("Phone name"), { target: { value: "Pixel" } });
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  fireEvent.change(screen.getByLabelText("Local service access key"), { target: { value: "invalid" } });
+  fireEvent.click(screen.getByRole("button", { name: "Open monitoring" }));
+  expect(ready).not.toHaveBeenCalled();
+  fireEvent.change(screen.getByLabelText("Local service access key"), { target: { value: "a".repeat(43) } });
+  fireEvent.click(screen.getByRole("button", { name: "Open monitoring" }));
+  expect(ready).toHaveBeenCalledWith(true);
+});
