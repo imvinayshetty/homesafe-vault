@@ -4,7 +4,7 @@ import { LocalBackupWorkspace } from "@/components/local-backup-workspace";
 import { VaultAccess } from "@/components/vault-access";
 import { SampleTransfer } from "@/components/sample-transfer";
 import { Button } from "@/components/ui/button";
-import { HardDrive, Thermometer, Wifi, ShieldCheck, KeyRound, Smartphone, Tablet, Laptop, History, RotateCcw, CheckCircle2, Loader2, Lock, Sun, Moon } from "lucide-react";
+import { HardDrive, Thermometer, Wifi, ShieldCheck, Smartphone, Tablet, Laptop, History, RotateCcw, CheckCircle2, Loader2, Lock, Sun, Moon } from "lucide-react";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -23,13 +23,10 @@ export const Route = createFileRoute("/")({
 type Device = { id: string; name: string; kind: "phone" | "tablet" | "laptop"; last: string };
 type Snap = { id: string; date: string; size: string; files: number; state: "idle" | "checking" | "valid" | "restoring" | "restored" };
 
-const newPin = () => String(Math.floor(Math.random() * 1e6)).padStart(6, "0");
 const icons = { phone: Smartphone, tablet: Tablet, laptop: Laptop };
 
 function Index() {
   const [now, setNow] = useState<Date | null>(null);
-  const [pin, setPin] = useState("------");
-  const [left, setLeft] = useState(30);
   const [temp, setTemp] = useState(38.4);
   const [mounted, setMounted] = useState(true);
   const [light, setLight] = useState(false);
@@ -47,7 +44,7 @@ function Index() {
   );
 
   useEffect(() => {
-    setPin(newPin()); setNow(new Date());
+    setNow(new Date());
     const html = document.documentElement;
     const saved = localStorage.getItem("theme");
     const initial = saved ?? (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
@@ -64,7 +61,6 @@ function Index() {
     const t = setInterval(() => {
       setNow(new Date());
       setTemp((x) => Math.min(46, Math.max(34, x + (Math.random() - 0.5) * 0.6)));
-      setLeft((l) => { if (l <= 1) { setPin(newPin()); return 30; } return l - 1; });
     }, 1000);
     return () => { clearInterval(t); mq.removeEventListener("change", onChange); };
   }, []);
@@ -158,21 +154,8 @@ function Index() {
           </div>
         </section>
 
-        <section className="grid gap-4 md:grid-cols-5">
-          <div className="panel glow md:col-span-2">
-            <div className="flex items-center gap-2 text-sm text-muted-foreground"><KeyRound className="h-4 w-4" /> Code for pairing a phone</div>
-            <div className="mt-5 flex justify-center gap-2">
-              {pin.split("").map((d, i) => (
-                <span key={i} className="grid h-14 w-11 place-items-center rounded-lg border border-border bg-secondary font-mono text-2xl font-semibold text-primary">{d}</span>
-              ))}
-            </div>
-            <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-muted">
-              <div className="h-full bg-primary transition-all duration-1000 ease-linear" style={{ width: `${(left / 30) * 100}%` }} />
-            </div>
-            <p className="mt-2 text-center text-xs text-muted-foreground">Fresh code in {left}s · enter it in HomeSafe on your phone</p>
-          </div>
-
-          <div className="panel md:col-span-3">
+        <section>
+          <div className="panel">
             <div className="flex items-center justify-between">
               <h2 className="font-semibold">Trusted devices</h2>
               <span className="text-xs text-muted-foreground">{devices.length} trusted</span>
