@@ -21,7 +21,7 @@ export function TransferStatus({ profile, phone, stage = 0 }: { profile: string;
       <h3 className="flex items-center gap-2 font-medium"><Wifi className="h-4 w-4 text-primary" />Transfer status</h3>
       <ol className="space-y-1">
         {steps.map((label, i) => {
-          const done = i < stage || (stage === 5 && i === 5);
+          const done = i < stage || (i === stage && (i === 2 || i === 5));
           const active = i === stage && !done;
           return (
             <li key={i} className={`relative flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-all duration-500 ${active ? "bg-accent text-foreground" : done ? "text-primary" : "text-muted-foreground opacity-60"}`}>
