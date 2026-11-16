@@ -192,11 +192,9 @@ export function LocalBackupWorkspace() {
       {message && <p role="status" className="break-words text-sm text-primary">{message}</p>}
       {busy && <p role="status" className="text-sm text-muted-foreground">Accessing local storage… Keep this page open.</p>}
       {enrollment?.phone && confirmed ? (
-        <div className="grid gap-6 lg:grid-cols-4">
-          <div className="lg:col-span-3"><TransferStatus profile={enrollment.profile} phone={enrollment.phone} /></div>
-          <div className="lg:col-span-1"><StorageHealth catalog={catalog} connected={Boolean(enrollment)} problem={storageProblem} compact /></div>
-        </div>
-      ) : <StorageHealth catalog={catalog} connected={Boolean(enrollment)} problem={storageProblem} />}
+        <TransferStatus profile={enrollment.profile} phone={enrollment.phone} />
+      ) : null}
+      <StorageHealth catalog={catalog} connected={Boolean(enrollment)} problem={storageProblem} />
       <details className="border-t border-border pt-4 text-sm" open>
         <summary className="cursor-pointer font-medium">What Android &amp; iPhone can back up</summary>
         <dl className="mt-3 grid gap-4 sm:grid-cols-2">

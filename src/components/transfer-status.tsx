@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { AlertTriangle, Loader2, Smartphone, Wifi } from "lucide-react";
 import { DAEMON_URL, applyDaemonEvent, parseDaemonEvent, type TransferState } from "@/lib/vault-daemon";
 
@@ -33,12 +34,39 @@ export function TransferStatus({ profile, phone }: { profile: string; phone: str
     open();
     return () => { stopped = true; clearTimeout(retry); ws?.close(); };
   }, [profile, phone]);
+  if (state.stage === 0 && !state.failed) return <AwaitingCard service={service} profile={profile} phone={phone} />;
+  return <TransferScreen state={state} profile={profile} phone={phone} service={service} onClose={state.failed || state.stage === 5 ? () => { stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
+}
+
+type Service = "checking" | "online" | "offline";
+const serviceLabel = (s: Service) => s === "online" ? "Local Vault service connected" : s === "checking" ? "Looking for local Vault service…" : "Local Vault service not running";
+
+/** Compact dashboard section shown while waiting for the phone. */
+export function AwaitingCard({ service, profile, phone, sample, action }: { service: Service; profile: string; phone: string; sample?: boolean; action?: ReactNode }) {
+  return (
+    <section aria-live="polite" className="flex flex-col items-center gap-5 rounded-2xl border border-border bg-card/60 p-6 text-center sm:flex-row sm:text-left">
+      <div className="relative grid h-24 w-24 shrink-0 place-items-center">
+        {[0, 1, 2].map(k => <span key={k} className="tx-ripple absolute inset-2 rounded-full border-2 border-primary" style={{ animationDelay: `${k * 0.8}s` }} />)}
+        <span className="grid h-16 w-16 place-items-center rounded-full bg-accent"><Smartphone className="tx-float h-8 w-8 text-primary" /></span>
+      </div>
+      <div className="flex-1 space-y-1">
+        <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{sample ? "Sample · " : ""}{profile} · {phone}</p>
+        <h3 className="font-display text-2xl">Awaiting connection<span className="inline-block animate-pulse">…</span></h3>
+        <p className="text-sm text-muted-foreground">Open the HomeSafe app on your phone and enter the Vault code. The transfer screen opens as soon as your phone connects.</p>
+        <p className={`flex items-center justify-center gap-2 text-xs sm:justify-start ${service === "online" ? "text-primary" : "text-muted-foreground"}`}><span className={`h-2 w-2 rounded-full ${service === "online" ? "bg-primary pulse-dot" : "bg-muted-foreground"}`} />{serviceLabel(service)}</p>
+      </div>
+      {action}
+    </section>
+  );
+}
+
+/** Full-screen payment-style transfer animation, from Establishing connection onwards. */
+export function TransferScreen({ state, profile, phone, service, onClose, sample }: { state: TransferState; profile: string; phone: string; service: Service; onClose?: () => void; sample?: boolean }) {
   const { stage, failed, progress } = state;
   const steps = transferSteps(profile, phone);
   const pct = Math.round((progress ?? 0) * 100);
   const done = stage === 5 && !failed;
   const verifiedOnly = stage === 2 && !failed;
-  const tone = failed ? "text-destructive" : "text-primary";
   const subtitle = failed ? `Backup stopped: ${failed}`
     : stage === 0 ? "Open the HomeSafe app on your phone and enter the Vault code"
     : stage === 1 ? "Securing a private link over your home Wi-Fi"
@@ -48,12 +76,14 @@ export function TransferStatus({ profile, phone }: { profile: string; phone: str
     : "Every file is saved on your local drive";
   const R = 88, C = 2 * Math.PI * R;
   const ring = stage === 4 ? pct / 100 : stage >= 5 ? 1 : stage === 3 ? 0.08 : 0;
-  return (
-    <div className="flex h-full flex-col items-center gap-6 rounded-2xl border border-border bg-card/60 p-6 text-center sm:p-10" aria-live="polite">
+  if (typeof document === "undefined") return null;
+  return createPortal(
+    <div role="dialog" aria-modal="true" aria-label="Transfer status" className="fixed inset-0 z-50 flex flex-col items-center justify-center gap-6 overflow-y-auto bg-background p-6 text-center sm:p-10" aria-live="polite">
       <div className="flex w-full flex-wrap items-center justify-between gap-2 text-left">
-        <h3 className="flex items-center gap-2 font-medium"><Wifi className="h-4 w-4 text-primary" />Transfer status</h3>
-        <span className={`flex items-center gap-2 text-xs ${service === "online" ? "text-primary" : "text-muted-foreground"}`}><span className={`h-2 w-2 rounded-full ${service === "online" ? "bg-primary pulse-dot" : "bg-muted-foreground"}`} />{service === "online" ? "Local Vault service connected" : service === "checking" ? "Looking for local Vault service…" : "Local Vault service not running"}</span>
+        <h3 className="flex items-center gap-2 font-medium"><Wifi className="h-4 w-4 text-primary" />Transfer status{sample && <span className="rounded-full border border-warning/50 px-2 py-0.5 text-xs text-warning">Sample</span>}</h3>
+        <span className={`flex items-center gap-2 text-xs ${service === "online" ? "text-primary" : "text-muted-foreground"}`}><span className={`h-2 w-2 rounded-full ${service === "online" ? "bg-primary pulse-dot" : "bg-muted-foreground"}`} />{sample ? "Demonstration only" : serviceLabel(service)}</span>
       </div>
+      <div className="w-full max-w-4xl flex-1" aria-hidden />
       <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{profile} · {phone}</p>
       <div className="relative grid h-56 w-56 place-items-center sm:h-64 sm:w-64">
         {!failed && !done && stage <= 1 && <>{[0, 1, 2].map(k => <span key={k} className="tx-ripple absolute inset-6 rounded-full border-2 border-primary" style={{ animationDelay: `${k * 0.8}s` }} />)}</>}
@@ -78,8 +108,10 @@ export function TransferStatus({ profile, phone }: { profile: string; phone: str
       <ol className="flex w-full max-w-md items-center gap-1.5" aria-label={`Step ${stage + 1} of 6`}>
         {steps.map((label, i) => <li key={i} title={label} className={`h-1.5 flex-1 rounded-full transition-colors duration-500 ${failed && i === stage ? "bg-destructive" : i < stage || (i === stage && (i === 2 || i === 5)) ? "bg-primary" : i === stage ? "bg-primary/50 animate-pulse" : "bg-muted"}`}><span className="sr-only">{label}</span></li>)}
       </ol>
-      <p className={`text-xs text-muted-foreground ${tone === "text-primary" ? "" : ""}`}>Start the backup from the HomeSafe app on your phone. This screen moves only when the local Vault service on this computer reports progress.</p>
+      {onClose && <button onClick={onClose} className="min-h-11 rounded-full bg-primary px-8 text-sm font-semibold text-primary-foreground hover:opacity-90">{failed ? "Back to dashboard" : stage === 5 ? "Done" : "Close sample"}</button>}
+      <p className="text-xs text-muted-foreground">{sample ? "Sample preview · no phone or drive is connected." : "This screen moves only when the local Vault service on this computer reports progress."}</p>
+      <div className="flex-1" aria-hidden />
     </div>
-  );
+  , document.body);
 }
 function ROOTLESS(profile: string, phone: string) { return `${profile}/${phone}`; }

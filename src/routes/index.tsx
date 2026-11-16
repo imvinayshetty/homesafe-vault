@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { LocalBackupWorkspace } from "@/components/local-backup-workspace";
 import { VaultAccess } from "@/components/vault-access";
+import { SampleTransfer } from "@/components/sample-transfer";
 import { Button } from "@/components/ui/button";
 import { HardDrive, Thermometer, Wifi, ShieldCheck, KeyRound, Smartphone, Tablet, Laptop, History, RotateCcw, CheckCircle2, Loader2, Lock, Sun, Moon } from "lucide-react";
 
@@ -119,6 +120,7 @@ function Index() {
         <Button variant="outline" onClick={() => setShowDemo(v => !v)}>{showDemo ? "Hide sample monitoring" : "Show sample monitoring"}</Button>
         {showDemo && <>
         <p className="text-xs text-warning">Sample vault monitoring below · drive, pairing, trusted devices and restore actions are demonstrations, not connected hardware.</p>
+        <SampleTransfer />
         <section className="grid gap-4 md:grid-cols-3">
           <div className="panel">
             <div className="flex items-center justify-between text-sm text-muted-foreground"><span>Vault drive</span><HardDrive className="h-4 w-4" /></div>
