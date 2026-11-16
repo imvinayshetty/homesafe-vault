@@ -49,4 +49,4 @@ use the editor.
 - Support HomeSafe's existing native signed begin/confirm and chunk protocol in a separate local adapter; never change the hosted app into a TLS or native-key proxy.
 - Guided installers use OS startup tools with argument arrays, protect local keys, and persist verified drive identity; startup must reject replaced drives rather than silently adopt them.
 
-- Electron wrapper in `electron/` loads the hosted dashboard, spawns vault-service via ELECTRON_RUN_AS_NODE, and exposes the owner key only via origin-checked IPC; the hosted app cannot launch local processes.
+- Electron wrapper in `electron/` serves a `DESKTOP=1` static SPA build from the app://vault scheme (only cloud sign-in uses the internet), spawns vault-service via ELECTRON_RUN_AS_NODE, and exposes the owner key only via origin-checked IPC.
