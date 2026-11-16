@@ -1,4 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
+
+type VaultDesktop = { isDesktop: true; getAccessKey: () => Promise<string | null>; status: () => Promise<{ running: boolean; error: string }> };
+const desktop = () => (typeof window === "undefined" ? undefined : (window as unknown as { vaultDesktop?: VaultDesktop }).vaultDesktop);
 import { HardDrive, Link, Unplug, ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { TransferStatus } from "@/components/transfer-status";
@@ -13,6 +16,19 @@ export function LocalVaultConnection({ onReady }: { onReady?: (ready: boolean) =
   const [accessKey, setAccessKey] = useState("");
   const [destination, setDestination] = useState<{ profile: string; phone: string; email: string; accessKey: string } | null>(null);
   const [error, setError] = useState("");
+  const [desktopNote, setDesktopNote] = useState("");
+  useEffect(() => {
+    const d = desktop();
+    if (step !== "access" || !d) return;
+    let live = true;
+    setDesktopNote("Connecting to the Vault service on this PC…");
+    d.getAccessKey().then(async key => {
+      if (!live) return;
+      if (key && /^[A-Za-z0-9_-]{43}$/.test(key)) { setDestination({ profile: safeSegment(profile), phone: safeSegment(phone), email: email.trim().toLowerCase(), accessKey: key }); onReady?.(true); setDesktopNote(""); }
+      else { const st = await d.status(); setDesktopNote(st.error ? `Vault service not running: ${st.error}` : "Vault service not running. Restart the HomeSafe Vault app."); }
+    }).catch(() => live && setDesktopNote("Could not reach the Vault service on this PC."));
+    return () => { live = false; };
+  }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
   const inputClass = "mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3";
   if (destination) return <section aria-labelledby="live-vault-heading" className="space-y-5 py-6">
     <div className="flex flex-wrap items-center justify-between gap-3"><h2 id="live-vault-heading" className="flex items-center gap-2 font-display text-2xl"><HardDrive className="h-5 w-5 text-primary" />Local Vault monitoring</h2><Button variant="outline" onClick={() => { setDestination(null); setAccessKey(""); setStep("destination"); onReady?.(false); }}><Unplug />Disconnect dashboard</Button></div>
@@ -34,6 +50,7 @@ export function LocalVaultConnection({ onReady }: { onReady?: (ready: boolean) =
         <Button type="submit" className="min-h-12 w-full" disabled={!email.trim() || !profile.trim() || !phone.trim()}>Continue<ArrowRight /></Button>
       </> : <>
         <p className="break-words text-sm text-muted-foreground">{profile} · {phone}</p>
+        {desktopNote && <p role="status" className="text-sm text-muted-foreground">{desktopNote}</p>}
         <label className="block text-sm">Local service access key<input required type="password" autoComplete="off" value={accessKey} onChange={e => setAccessKey(e.target.value)} className={inputClass} /></label>
         <p className="text-sm text-muted-foreground">Use the owner access key from the Vault service on your PC or Raspberry Pi.</p>
         <Button type="submit" className="min-h-12 w-full" disabled={!accessKey.trim()}><Link />Open monitoring</Button>
