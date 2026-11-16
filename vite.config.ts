@@ -15,6 +15,6 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
     // DESKTOP=1 builds a static single-page bundle that the Electron app loads from disk.
-    ...(process.env.DESKTOP === "1" ? { spa: { enabled: true, prerender: { outputPath: "/index.html" } } } : {}),
+    ...(process.env["DESKTOP"] === "1" ? { spa: { enabled: true, prerender: { outputPath: "/index.html" } } } : {}),
   },
 });
