@@ -22,7 +22,9 @@ function serveDashboard() {
     return net.fetch(pathToFileURL(file).toString());
   });
 }
-const ORIGIN = new URL(APP_URL).origin;
+// Node's URL gives custom schemes an origin of "null"; the dashboard's real browser origin is app://vault.
+const ORIGIN = APP_URL.startsWith('app://') ? 'app://vault' : new URL(APP_URL).origin;
+const originOf = u => u.startsWith('app://') ? 'app://' + new URL(u).host : new URL(u).origin;
 const stateDir = path.join(app.getPath('userData'), 'vault-service');
 const configPath = path.join(stateDir, 'config.json');
 const serviceDir = app.isPackaged ? path.join(process.resourcesPath, 'vault-service') : path.join(__dirname, '..', 'vault-service');
@@ -37,7 +39,11 @@ function lanIP() {
 async function firstRunSetup() {
   if (fs.existsSync(configPath)) {
     const existing = JSON.parse(await fsp.readFile(configPath, 'utf8'));
-    if (!existing.origins.includes(ORIGIN)) { existing.origins = [ORIGIN]; await fsp.writeFile(configPath, JSON.stringify(existing, null, 2), { mode: 0o600 }); }
+    let changed = false;
+    if (existing.origins.length !== 1 || existing.origins[0] !== ORIGIN) { existing.origins = [ORIGIN]; changed = true; }
+    // Home routers often hand out a new Wi-Fi address; binding the old one makes the service exit.
+    const ip = lanIP(); if (ip && ip !== existing.lanHost) { existing.lanHost = ip; changed = true; }
+    if (changed) await fsp.writeFile(configPath, JSON.stringify(existing, null, 2), { mode: 0o600 });
     return existing;
   }
   await dialog.showMessageBox({ type: 'info', title: 'HomeSafe Vault setup', message: 'Choose the HomeSafeBckup folder on your USB backup drive.', detail: 'This is a one-time step. Nothing is uploaded; backups stay on this drive.' });
@@ -59,26 +65,32 @@ async function firstRunSetup() {
   return config;
 }
 
+let restarts = 0, restartTimer = null, config = null;
+function ensureRunning() {
+  if (service || restartTimer || !config) return;
+  restartTimer = setTimeout(async () => { restartTimer = null; try { config = await firstRunSetup(); startService(); } catch (e) { lastError = e.message; } }, Math.min(30000, 1000 * 2 ** Math.min(restarts++, 5)));
+}
 function startService() {
   try { fs.unlinkSync(path.join(stateDir, 'service.lock')); } catch {} // only this app owns this state dir
   service = spawn(process.execPath, [path.join(serviceDir, 'src', 'cli.mjs'), 'start', '--state', stateDir], { env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   service.stderr.on('data', d => { lastError = String(d).trim(); });
-  service.on('exit', code => { service = null; if (code) lastError ||= 'Vault service stopped. Check the USB drive is connected.'; });
+  service.stdout.on('data', () => { restarts = 0; });
+  service.on('exit', code => { service = null; if (code) lastError ||= 'Vault service stopped. Check the USB drive is connected.'; ensureRunning(); });
 }
 
 async function boot() {
   serveDashboard();
   app.setLoginItemSettings({ openAtLogin: true });
-  let config;
   try { config = await firstRunSetup(); startService(); }
   catch (e) { lastError = e.message; await dialog.showMessageBox({ type: 'warning', title: 'HomeSafe Vault', message: 'Vault service not started', detail: e.message }); }
   ipcMain.handle('vault:get-access-key', ev => {
-    if (new URL(ev.senderFrame.url).origin !== ORIGIN) throw new Error('Untrusted page');
+    if (originOf(ev.senderFrame.url) !== ORIGIN) throw new Error('Untrusted page');
     return config && service ? config.adminToken : null;
   });
   ipcMain.handle('vault:status', () => ({ running: !!service, error: service ? '' : lastError }));
+  ipcMain.handle('vault:ensure-running', () => { if (!service) { restarts = 0; ensureRunning(); } return { running: !!service, error: service ? '' : lastError }; });
   win = new BrowserWindow({ width: 1280, height: 860, title: 'HomeSafe Vault', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
-  win.webContents.on('will-navigate', (e, url) => { if (new URL(url).origin !== ORIGIN) e.preventDefault(); });
+  win.webContents.on('will-navigate', (e, url) => { if (originOf(url) !== ORIGIN) e.preventDefault(); });
   win.webContents.setWindowOpenHandler(({ url }) => { if (/^https:\/\//.test(url)) shell.openExternal(url); return { action: 'deny' }; });
   win.loadURL(APP_URL);
 }

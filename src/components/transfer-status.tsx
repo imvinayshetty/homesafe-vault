@@ -24,7 +24,7 @@ export function TransferStatus({ profile, phone, email = "", accessKey = "" }: {
       try { ws = new WebSocket(DAEMON_URL); } catch { setService("offline"); return; }
       socketRef.current = ws;
       ws.onopen = () => { ws?.send(JSON.stringify({ type: "authenticate", token: accessKey })); };
-      ws.onclose = (event) => { setService("offline"); setPairing(null); if (event.code === 1008) setServiceError("Local access key was rejected. Disconnect and enter the key from your Vault service."); if (!stopped && event.code !== 1008) retry = setTimeout(open, 10000); };
+      ws.onclose = (event) => { setService("offline"); setPairing(null); if (event.code === 1008) setServiceError("Local access key was rejected. Disconnect and enter the key from your Vault service."); if (!stopped && event.code !== 1008) { (window as unknown as { vaultDesktop?: { ensureRunning?: () => Promise<unknown> } }).vaultDesktop?.ensureRunning?.().catch(() => {}); retry = setTimeout(open, 4000); } };
       ws.onmessage = (m) => {
         try {
           const message = JSON.parse(String(m.data));

@@ -42,4 +42,4 @@ async function main() {
     process.on('SIGINT', stop); process.on('SIGTERM', stop);
   } catch (e) { await lock.close(); await fs.unlink(lockPath); throw e; }
 }
-main().catch(() => { console.error('Vault could not start. Check command options, existing drive folder, TLS files, and local settings. If service.lock exists, stop the other instance before removing a stale lock. No existing backup was replaced.'); process.exitCode = 1; });
+main().catch(e => { console.error(`Vault could not start: ${e?.code === 'EADDRINUSE' ? 'another program is using the Vault port' : e?.code === 'EADDRNOTAVAIL' ? 'this PC\'s Wi-Fi address changed' : e?.message ?? 'unknown error'}. Check command options, existing drive folder, TLS files, and local settings. If service.lock exists, stop the other instance before removing a stale lock. No existing backup was replaced.`); process.exitCode = 1; });
