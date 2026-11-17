@@ -30,10 +30,15 @@ const configPath = path.join(stateDir, 'config.json');
 const serviceDir = app.isPackaged ? path.join(process.resourcesPath, 'vault-service') : path.join(__dirname, '..', 'vault-service');
 let service = null, win = null, lastError = '';
 
-function lanIP() {
-  for (const list of Object.values(os.networkInterfaces())) for (const n of list || [])
-    if (n.family === 'IPv4' && !n.internal && /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(n.address)) return n.address;
-  return null;
+const discovery = () => import(pathToFileURL(path.join(serviceDir, 'src', 'discovery.mjs')).href);
+async function lanIP() { return (await discovery()).defaultRouteIPv4(); }
+// Zero-config drive choice: reuse an existing HomeSafeBckup folder, else the external drive with most free space.
+async function autoBackupRoot() {
+  const d = await discovery();
+  const found = await d.findBackupRoot(await d.externalDriveRoots());
+  if (!found) return null;
+  if (!found.existing) await fsp.mkdir(found.root);
+  return found.root;
 }
 
 async function firstRunSetup() {
@@ -42,18 +47,23 @@ async function firstRunSetup() {
     let changed = false;
     if (existing.origins.length !== 1 || existing.origins[0] !== ORIGIN) { existing.origins = [ORIGIN]; changed = true; }
     // Home routers often hand out a new Wi-Fi address; binding the old one makes the service exit.
-    const ip = lanIP(); if (ip && ip !== existing.lanHost) { existing.lanHost = ip; changed = true; }
+    const ip = await lanIP(); if (ip && ip !== existing.lanHost) { existing.lanHost = ip; changed = true; }
     if (changed) await fsp.writeFile(configPath, JSON.stringify(existing, null, 2), { mode: 0o600 });
     return existing;
   }
-  await dialog.showMessageBox({ type: 'info', title: 'HomeSafe Vault setup', message: 'Choose the HomeSafeBckup folder on your USB backup drive.', detail: 'This is a one-time step. Nothing is uploaded; backups stay on this drive.' });
-  const pick = await dialog.showOpenDialog({ title: 'Select HomeSafeBckup folder', properties: ['openDirectory', 'createDirectory'] });
-  if (pick.canceled || !pick.filePaths[0]) throw new Error('No backup folder selected');
-  const root = await fsp.realpath(pick.filePaths[0]);
+  let chosen = await autoBackupRoot().catch(() => null);
+  if (!chosen) {
+    // Only when no USB drive is plugged in: ask once.
+    await dialog.showMessageBox({ type: 'info', title: 'HomeSafe Vault setup', message: 'Plug in your USB backup drive, then choose its HomeSafeBckup folder.', detail: 'This is a one-time step. Nothing is uploaded; backups stay on this drive.' });
+    const pick = await dialog.showOpenDialog({ title: 'Select HomeSafeBckup folder', properties: ['openDirectory', 'createDirectory'] });
+    if (pick.canceled || !pick.filePaths[0]) throw new Error('No backup drive found. Plug in your USB drive and reopen HomeSafe Vault.');
+    chosen = pick.filePaths[0];
+  }
+  const root = await fsp.realpath(chosen);
   if (path.basename(root) !== 'HomeSafeBckup') throw new Error('Select the folder named HomeSafeBckup itself');
   const probe = path.join(root, `.homesafe-probe-${crypto.randomBytes(6).toString('hex')}`);
   await fsp.writeFile(probe, 'ok', { flag: 'wx' }); await fsp.unlink(probe); // verify drive is writable
-  const ip = lanIP(); if (!ip) throw new Error('Connect this PC to your home Wi-Fi first');
+  const ip = await lanIP(); if (!ip) throw new Error('Connect this PC to your home Wi-Fi first');
   const st = await fsp.stat(root);
   await fsp.mkdir(stateDir, { recursive: true, mode: 0o700 });
   const selfsigned = require('selfsigned');

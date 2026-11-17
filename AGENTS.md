@@ -51,3 +51,5 @@ use the editor.
 
 - Electron wrapper in `electron/` serves a `DESKTOP=1` static SPA build from the app://vault scheme (only cloud sign-in uses the internet), spawns vault-service via ELECTRON_RUN_AS_NODE, and exposes the owner key only via origin-checked IPC.
 - Update README.md in the same change as any new feature or behaviour change; it is the single user-facing record of functionality.
+- Zero-config discovery (default-route IP, external drive search, mDNS advertising) lives in `vault-service/src/discovery.mjs`, shared by the CLI and Electron; pairing codes are minted only over the owner-authenticated loopback socket, never an unauthenticated HTTP endpoint.
+- The main page is viewport-locked (`h-svh overflow-hidden`); long content scrolls inside its own panel, and only the sample-monitoring toggle unlocks page scroll.

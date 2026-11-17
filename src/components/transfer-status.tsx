@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Loader2, Smartphone, Wifi } from "lucide-react";
-import { DAEMON_URL, PAIRING_CODE_LIFETIME_MS, applyDaemonEvent, parseDaemonEvent, type PairingCode, type TransferState } from "@/lib/vault-daemon";
+import { DAEMON_URL, MINTED_PAIRING_CODE_LIFETIME_MS, applyDaemonEvent, parseDaemonEvent, type PairingCode, type TransferState } from "@/lib/vault-daemon";
 import { VaultPairingCode } from "@/components/vault-pairing-code";
 
 export function transferSteps(profile: string, phone: string): string[] {
@@ -33,7 +33,7 @@ export function TransferStatus({ profile, phone, email = "", accessKey = "" }: {
         } catch { return; }
         const e = parseDaemonEvent(m.data); if (!e) return;
         if (e.type === "pairing_code") {
-          setPairing({ code: e.code, expiresAt: Math.min(e.expiresAt, Date.now() + PAIRING_CODE_LIFETIME_MS) });
+          setPairing({ code: e.code, expiresAt: Math.min(e.expiresAt, Date.now() + MINTED_PAIRING_CODE_LIFETIME_MS), ...(e.qr ? { qr: e.qr } : {}), ...(e.fingerprint ? { fingerprint: e.fingerprint } : {}) });
           return;
         }
         if (e.type === "phone_connecting") { setPairing(null); if (stateRef.current.stage > 1) return; }
@@ -46,7 +46,7 @@ export function TransferStatus({ profile, phone, email = "", accessKey = "" }: {
     open();
     return () => { stopped = true; clearTimeout(retry); ws?.close(); };
   }, [profile, phone, email, accessKey]);
-  if (state.stage === 0 && !state.failed) return <><AwaitingCard service={service} profile={profile} phone={phone} pairing={pairing} />{serviceError && <p role="alert" className="text-sm text-destructive">{serviceError}</p>}</>;
+  if (state.stage === 0 && !state.failed) return <><AwaitingCard service={service} profile={profile} phone={phone} pairing={pairing} onMint={service === "online" ? () => socketRef.current?.send(JSON.stringify({ type: "mint_pairing" })) : undefined} />{serviceError && <p role="alert" className="text-sm text-destructive">{serviceError}</p>}</>;
   return <TransferScreen state={state} profile={profile} phone={phone} service={service} onClose={state.failed || state.stage === 5 ? () => { socketRef.current?.send(JSON.stringify({ type: "reset" })); stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
 }
 
@@ -54,9 +54,9 @@ type Service = "checking" | "online" | "offline";
 const serviceLabel = (s: Service) => s === "online" ? "Local Vault service connected" : s === "checking" ? "Looking for local Vault service…" : "Local Vault service not running";
 
 /** Compact dashboard section shown while waiting for the phone. */
-export function AwaitingCard({ service, profile, phone, sample, action, pairing }: { service: Service; profile: string; phone: string; sample?: boolean; action?: ReactNode; pairing?: PairingCode | null }) {
+export function AwaitingCard({ service, profile, phone, sample, action, pairing, onMint }: { service: Service; profile: string; phone: string; sample?: boolean; action?: ReactNode; pairing?: PairingCode | null; onMint?: (() => void) | undefined }) {
   return (
-    <section className="flex flex-col items-center gap-5 rounded-2xl border border-border bg-card/60 p-6 text-center lg:flex-row lg:text-left">
+    <section className="flex flex-col items-center gap-4 rounded-2xl border border-border bg-card/60 p-4 text-center sm:p-5 lg:flex-row lg:text-left">
       <div className="relative grid h-24 w-24 shrink-0 place-items-center">
         {[0, 1, 2].map(k => <span key={k} className="tx-ripple absolute inset-2 rounded-full border-2 border-primary" style={{ animationDelay: `${k * 0.8}s` }} />)}
         <span className="grid h-16 w-16 place-items-center rounded-full bg-accent"><Smartphone className="tx-float h-8 w-8 text-primary" /></span>
@@ -64,10 +64,10 @@ export function AwaitingCard({ service, profile, phone, sample, action, pairing 
       <div className="flex-1 space-y-1">
         <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{sample ? "Sample · " : ""}{profile} · {phone}</p>
         <h3 className="font-display text-2xl">Awaiting connection<span className="inline-block animate-pulse">…</span></h3>
-        <p className="text-sm text-muted-foreground">Open the HomeSafe app on your phone and enter the Vault code. The transfer screen opens as soon as your phone connects.</p>
+        <p className="text-sm text-muted-foreground">Open the HomeSafe app on your phone and scan the QR code, or enter the Vault code. The transfer screen opens as soon as your phone connects.</p>
         <p className={`flex items-center justify-center gap-2 text-xs sm:justify-start ${service === "online" ? "text-primary" : "text-muted-foreground"}`}><span className={`h-2 w-2 rounded-full ${service === "online" ? "bg-primary pulse-dot" : "bg-muted-foreground"}`} />{serviceLabel(service)}</p>
       </div>
-      <VaultPairingCode sample={sample ?? false} pairing={pairing ?? null} />
+      <VaultPairingCode sample={sample ?? false} pairing={pairing ?? null} onMint={onMint} />
       {action}
     </section>
   );

@@ -18,4 +18,5 @@
 - [x] Add selected-file backups, date naming, duplicate protection and location recovery.
 - [x] Show Android/iPhone limitations and distinguish browser identity from native phone enrollment.
 - [x] Test rules and verify encryption, file readback and duplicate handling using a browser folder adapter; native disk permission cannot be automated here.
-- [ ] HomeSafe mobile enrollment and LAN transfer: blocked on native companion software and changes in the HomeSafe project.
+- [ ] HomeSafe mobile enrollment and LAN transfer: blocked on native companion software and changes in the HomeSafe project.- [x] Zero-config automation: auto IP/drive, mDNS, in-app Pair mobile device with 120s code + QR, autostart templates, no-scroll layout.
+- [ ] Build Windows setup: waiting on user confirmation of any further changes.

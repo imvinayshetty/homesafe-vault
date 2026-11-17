@@ -32,7 +32,7 @@ A privacy-first desktop dashboard for a PC, Mac or Raspberry Pi that hosts a loc
 - Storage health panel: available space, 14-day backup size trend, near-capacity alerts.
 
 ### Local Vault service (`vault-service/`)
-- Node companion: loopback WebSocket (7878, origin-checked + owner key) for the dashboard, LAN HTTPS (7879) for phone uploads.
+- Node companion: loopback WebSocket (7878, origin-checked + owner key) for the dashboard, LAN HTTPS (7443) for phone uploads, advertised on Wi-Fi as `_homesafe._tcp.local.` (TXT v, name, fp) so phones find the Vault and pin its certificate without typing.
 - Handles pairing codes, device connections, uploads, disk readback, and HomeSafe's native signed begin/confirm + chunk protocol.
 - Bounded local event log only; no cloud tracking of backups.
 - CLI: `init`, `start`, `access`, `install` (guided installer: drive check, TLS cert, systemd / Task Scheduler auto-start, readiness check), `doctor`. Replaced drives are rejected at startup.
@@ -56,3 +56,11 @@ bun run dev
 bunx vitest run          # dashboard tests
 cd vault-service && npm test
 ```
+
+## Zero-configuration automation
+- The Vault service follows the current home Wi-Fi address (default-route IPv4) on every start; no host setting.
+- The desktop app finds the backup drive itself: an existing `HomeSafeBckup` folder on any external drive (Windows D:–Z:, macOS `/Volumes`, Linux/Pi `/media`, `/mnt`), otherwise creates it on the external drive with most free space. A folder picker appears only when no USB drive is plugged in.
+- Phones discover the Vault over Wi-Fi via mDNS `_homesafe._tcp.local.` on port 7443 with the certificate fingerprint in the TXT record.
+- **Pair mobile device** button on the Awaiting connection card asks the service (over the owner-authenticated local socket) for a single-use 6-digit code valid 120 seconds; the dashboard shows the code, a countdown ring and a scannable `homesafe://pair?host=&port=&fp=&code=&email=&profile=&phone=` QR. Without pressing it, codes still rotate every 30 seconds.
+- Autostart templates for service-only installs: `vault-service/autostart/` (macOS LaunchAgent plist, systemd user unit, Windows hidden Task Scheduler script). The desktop app starts the service itself.
+- Screens fit the window without scrolling; only "Show sample monitoring" extends the page, and the Saved backups list scrolls inside its own panel.

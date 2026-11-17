@@ -4,6 +4,7 @@ import os from 'node:os';
 import { randomBytes, X509Certificate, createHash } from 'node:crypto';
 import { createVaultService } from './service.mjs';
 import { guidedInstall, driveReady } from './installer.mjs';
+import { defaultRouteIPv4, advertise } from './discovery.mjs';
 const args = process.argv.slice(2);
 const option = name => { const i = args.indexOf(`--${name}`); return i >= 0 ? args[i + 1] : undefined; };
 const stateDir = path.resolve(option('state') ?? path.join(os.homedir(), '.homesafe-vault'));
@@ -34,11 +35,14 @@ async function main() {
   try {
     const cert = await fs.readFile(config.cert), key = await fs.readFile(config.key);
     const fingerprint = createHash('sha256').update(new X509Certificate(cert).raw).digest('hex');
-    const service = await createVaultService({ ...config, stateDir, tls: { cert, key } });
-    console.log(`HomeSafe Vault running. Monitor 127.0.0.1:${service.monitorPort}; phone HTTPS port ${service.lanPort}.`);
+    // Zero-config: follow the current home Wi-Fi address instead of a stored --host.
+    const lanHost = (await defaultRouteIPv4()) ?? config.lanHost;
+    const service = await createVaultService({ ...config, lanHost, stateDir, tls: { cert, key } });
+    console.log(`HomeSafe Vault running. Monitor 127.0.0.1:${service.monitorPort}; phone HTTPS ${lanHost ?? '0.0.0.0'}:${service.lanPort}.`);
+    const mdns = await advertise({ port: service.lanPort, fingerprint }).catch(e => { console.error(`Wi-Fi discovery unavailable: ${e.message}`); return null; });
     console.log(`Phone certificate SHA-256 fingerprint: ${fingerprint}`);
     let stopping = false;
-    const stop = async () => { if (stopping) return; stopping = true; await service.close(); await lock.close(); await fs.unlink(lockPath); process.exit(0); };
+    const stop = async () => { if (stopping) return; stopping = true; await mdns?.stop(); await service.close(); await lock.close(); await fs.unlink(lockPath); process.exit(0); };
     process.on('SIGINT', stop); process.on('SIGTERM', stop);
   } catch (e) { await lock.close(); await fs.unlink(lockPath); throw e; }
 }

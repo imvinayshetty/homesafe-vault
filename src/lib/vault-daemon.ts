@@ -1,10 +1,12 @@
 /** Contract with the local Vault service (runs on the PC/Pi, never the cloud). */
 export const DAEMON_URL = "ws://127.0.0.1:7878/v1/transfer-events";
 export const PAIRING_CODE_LIFETIME_MS = 30_000;
-export interface PairingCode { code: string; expiresAt: number }
+/** "Pair Mobile Device" codes are single-use and last two minutes. */
+export const MINTED_PAIRING_CODE_LIFETIME_MS = 120_000;
+export interface PairingCode { code: string; expiresAt: number; qr?: string; fingerprint?: string }
 
 export type DaemonEvent =
-  | { type: "pairing_code"; code: string; expiresAt: number }
+  | { type: "pairing_code"; code: string; expiresAt: number; qr?: string; fingerprint?: string }
   | { type: "phone_connecting" }
   | { type: "pairing_verified"; profile: string; phone: string }
   | { type: "transfer_started" }
@@ -19,7 +21,13 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent | null {
     const v = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (!v || typeof v !== "object" || typeof v.type !== "string") return null;
     switch (v.type) {
-      case "pairing_code": return typeof v.code === "string" && /^\d{6}$/.test(v.code) && Number.isFinite(v.expiresAt) ? { type: v.type, code: v.code, expiresAt: v.expiresAt } : null;
+      case "pairing_code": {
+        if (typeof v.code !== "string" || !/^\d{6}$/.test(v.code) || !Number.isFinite(v.expiresAt)) return null;
+        const e: DaemonEvent = { type: v.type, code: v.code, expiresAt: v.expiresAt };
+        if (typeof v.qr === "string" && v.qr.startsWith("homesafe://pair?") && v.qr.length < 1000) e.qr = v.qr;
+        if (typeof v.fingerprint === "string" && /^[a-f0-9]{64}$/.test(v.fingerprint)) e.fingerprint = v.fingerprint;
+        return e;
+      }
       case "phone_connecting": case "transfer_started": case "transfer_completed": return { type: v.type };
       case "pairing_verified": return typeof v.profile === "string" && typeof v.phone === "string" ? { type: v.type, profile: v.profile, phone: v.phone } : null;
       case "transfer_progress": return Number.isFinite(v.files) && Number.isFinite(v.total) && v.total > 0 ? { type: v.type, files: v.files, total: v.total } : null;

@@ -30,12 +30,12 @@ export function LocalVaultConnection({ onReady }: { onReady?: (ready: boolean) =
     return () => { live = false; };
   }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
   const inputClass = "mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3";
-  if (destination) return <section aria-labelledby="live-vault-heading" className="space-y-5 py-6">
+  if (destination) return <section aria-labelledby="live-vault-heading" className="space-y-4 py-2">
     <div className="flex flex-wrap items-center justify-between gap-3"><h2 id="live-vault-heading" className="flex items-center gap-2 font-display text-2xl"><HardDrive className="h-5 w-5 text-primary" />Local Vault monitoring</h2><Button variant="outline" onClick={() => { setDestination(null); setAccessKey(""); setStep("destination"); onReady?.(false); }}><Unplug />Disconnect dashboard</Button></div>
     <TransferStatus {...destination} />
   </section>;
   return <FlowScreen key={step} title={step === "destination" ? "Choose your phone" : "Connect your local Vault"} eyebrow={step === "destination" ? "Vault connection · Step 1 of 2" : "Vault connection · Step 2 of 2"}>
-    <form className="space-y-6" onSubmit={e => {
+    <form className="space-y-4" onSubmit={e => {
       e.preventDefault();
       try {
         if (step === "destination") { safeSegment(profile); safeSegment(phone); setStep("access"); }

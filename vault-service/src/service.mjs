@@ -2,12 +2,16 @@ import http from 'node:http';
 import https from 'node:https';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { randomBytes, randomInt, timingSafeEqual, createPublicKey, verify } from 'node:crypto';
+import { randomBytes, randomInt, timingSafeEqual, createPublicKey, verify, createHash, X509Certificate } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
 import { segment, enrollIdentity, verifyIdentity, createTransfer, receiveFile, finishTransfer } from './storage.mjs';
 import { createNativeProtocol } from './native-protocol.mjs';
 export const CODE_LIFETIME_MS = 30000;
+export const MINTED_CODE_LIFETIME_MS = 120000;
+export const DEFAULT_LAN_PORT = 7443;
+/** QR payload read by the HomeSafe phone app: host, port, pinned certificate fingerprint, code and account. */
+export function pairingQr({ host, port, fingerprint, code, email, profile, phone }) { const q = new URLSearchParams({ host: host ?? '', port: String(port), fp: fingerprint ?? '', code, ...(email ? { email } : {}), profile, phone }); return `homesafe://pair?${q}`; }
 const token = () => randomBytes(32).toString('base64url');
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 const pairSchema = z.object({ profile: segment, phone: segment, code: z.string().regex(/^\d{6}$/), publicKey: z.string().max(200), challenge: z.string().max(100), signature: z.string().max(200) });
@@ -34,10 +38,13 @@ export async function createVaultService(config) {
   };
   const send = (ws, event) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event)); };
   const emit = event => { if (event.type === 'transfer_progress' && history.at(-1)?.type === 'transfer_progress') history.pop(); history.push(event); for (const ws of monitors) send(ws, event); };
-  const rotate = () => {
+  const fingerprint = config.tls ? createHash('sha256').update(new X509Certificate(config.tls.cert).raw).digest('hex') : null;
+  let lanPort = config.lanPort ?? DEFAULT_LAN_PORT;
+  const codeEvent = () => ({ type: 'pairing_code', ...pairing, fingerprint, qr: pairingQr({ host: config.lanHost, port: lanPort, fingerprint, code: pairing.code, email: selected.email, profile: selected.profile, phone: selected.phone }) });
+  const rotate = (lifetime = CODE_LIFETIME_MS) => {
     if (!selected || active || history.length) return;
-    pairing = { code: String(randomInt(0, 1000000)).padStart(6, '0'), expiresAt: Date.now() + CODE_LIFETIME_MS };
-    for (const ws of monitors) send(ws, { type: 'pairing_code', ...pairing });
+    pairing = { code: String(randomInt(0, 1000000)).padStart(6, '0'), expiresAt: Date.now() + lifetime, single: lifetime === MINTED_CODE_LIFETIME_MS };
+    for (const ws of monitors) send(ws, codeEvent());
   };
   const fail = async () => { if (active) active.failed = true; emit({ type: 'transfer_failed', reason: 'Local transfer failed. Check the drive and phone connection, then reconnect.' }); await audit('failure', 'transfer'); };
   const reply = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
@@ -104,13 +111,18 @@ export async function createVaultService(config) {
         const v = JSON.parse(raw.toString());
         if (!authenticated) { if (v.type !== 'authenticate' || !equal(v.token, config.adminToken)) return ws.close(1008, 'Unauthorized'); authenticated = true; clearTimeout(timeout); send(ws, { type: 'service_ready' }); return; }
         if (v.type === 'select_destination' || v.type === 'reset') {
-          if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone && (selected?.email ?? '') === (v.email ?? '').toLowerCase()) { monitors.add(ws); for (const e of history) send(ws, e); if (pairing && !history.length) send(ws, { type: 'pairing_code', ...pairing }); return; }
+          if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone && (selected?.email ?? '') === (v.email ?? '').toLowerCase()) { monitors.add(ws); for (const e of history) send(ws, e); if (pairing && !history.length) send(ws, codeEvent()); return; }
           if ((active && !active.failed) || native.active()) throw new Error('A transfer is active');
           if (v.type === 'select_destination' && [...monitors].some(m => m !== ws && m.readyState === WebSocket.OPEN)) throw new Error('Another dashboard owns the selected destination');
           monitors.add(ws);
           native.reset();
           if (v.type === 'select_destination') selected = { profile: segment.parse(v.profile), phone: segment.parse(v.phone), ...(v.email ? { email: z.string().email().max(254).parse(v.email).toLowerCase() } : {}) };
           active = null; history = []; sessions.clear(); rotate(); await audit('profile_selected');
+        }
+        if (v.type === 'mint_pairing') {
+          // Owner-authenticated loopback replacement for the old terminal `pair` command: single-use, 120 seconds.
+          if (!selected || !monitors.has(ws) || active || native.active() || history.length) throw new Error('Choose a phone and wait for any transfer to finish');
+          rotate(MINTED_CODE_LIFETIME_MS); await audit('pairing_minted'); return;
         }
         if (v.type === 'revoke_phone') {
           const profile = segment.parse(v.profile), phone = segment.parse(v.phone);
@@ -129,7 +141,8 @@ export async function createVaultService(config) {
   lanServer.requestTimeout = 120000; lanServer.headersTimeout = 15000;
   const listen = (server, port, host) => new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
   await listen(monitorServer, config.monitorPort ?? 7878, '127.0.0.1');
-  try { await listen(lanServer, config.lanPort ?? 7879, config.testOnly ? '127.0.0.1' : config.lanHost ?? '0.0.0.0'); } catch (e) { monitorServer.close(); throw e; }
+  try { await listen(lanServer, lanPort, config.testOnly ? '127.0.0.1' : config.lanHost ?? '0.0.0.0'); } catch (e) { monitorServer.close(); throw e; }
+  lanPort = lanServer.address().port;
   const timer = setInterval(() => { if (!pairing || pairing.expiresAt <= Date.now()) rotate(); if (native.expired()) void serialize(() => native.fail()); if (active && !active.failed && Date.now() - active.lastActivity > 180000) { active.failed = true; void serialize(fail); } for (const [t, s] of sessions) if (s.expiresAt <= Date.now()) sessions.delete(t); for (const [t, c] of challenges) if (c.expiresAt <= Date.now()) challenges.delete(t); for (const [ip, a] of attempts) if (a.until <= Date.now()) attempts.delete(ip); }, 500);
-  return { monitorPort: monitorServer.address().port, lanPort: lanServer.address().port, async close() { if (closed) return; closed = true; clearInterval(timer); for (const ws of wss.clients) ws.terminate(); await Promise.all([new Promise(r => monitorServer.close(r)), new Promise(r => lanServer.close(r))]); } };
+  return { monitorPort: monitorServer.address().port, lanPort, fingerprint, async close() { if (closed) return; closed = true; clearInterval(timer); for (const ws of wss.clients) ws.terminate(); await Promise.all([new Promise(r => monitorServer.close(r)), new Promise(r => lanServer.close(r))]); } };
 }

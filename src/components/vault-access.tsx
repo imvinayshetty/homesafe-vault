@@ -160,7 +160,7 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
         <Button role="tab" aria-selected={mode === "login"} disabled={busy} variant={mode === "login" ? "secondary" : "ghost"} className="h-auto min-h-12 whitespace-normal" onClick={() => { setMode("login"); setError(""); setPassword(""); }}>Returning user</Button>
         <Button role="tab" aria-selected={mode === "register"} disabled={busy} variant={mode === "register" ? "secondary" : "ghost"} className="h-auto min-h-12 whitespace-normal" onClick={() => { setMode("register"); setError(""); setPassword(""); }}>First-time registration</Button>
       </div>
-      <form className="space-y-6" onSubmit={e => { e.preventDefault(); if (!busy && email.trim() && password.length >= 6) void (mode === "login" ? login() : register()); }}>
+      <form className="space-y-4" onSubmit={e => { e.preventDefault(); if (!busy && email.trim() && password.length >= 6) void (mode === "login" ? login() : register()); }}>
         <label className="block text-sm">Email address<input required type="email" disabled={busy} value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" className={inputClass} /></label>
         <label className="block text-sm">Password<input required minLength={6} disabled={busy} type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} className={inputClass} /></label>
         <Button type="submit" className="min-h-12 w-full" disabled={busy || !email.trim() || password.length < 6}>{busy ? <Loader2 className="animate-spin" /> : <ArrowRight />}{mode === "login" ? "Continue to Authy" : "Create account"}</Button>
@@ -182,7 +182,7 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     </> : stage.kind === "enroll" || stage.kind === "challenge" ? <>
       <Smartphone className="h-10 w-10 text-primary" />
       <p className="text-sm text-muted-foreground">Enter the current six-digit code for your Vault account in Authy.</p>
-      <form className="space-y-6" onSubmit={e => { e.preventDefault(); if (!busy && token.length === 6) void verifyToken(stage.factorId, stage); }}>
+      <form className="space-y-4" onSubmit={e => { e.preventDefault(); if (!busy && token.length === 6) void verifyToken(stage.factorId, stage); }}>
         <label className="block text-sm">Authy code<input disabled={busy} required pattern="[0-9]{6}" value={token} onChange={e => setToken(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="000000" className={`${inputClass} text-center font-mono text-2xl`} /></label>
         <Button type="submit" className="min-h-12 w-full" disabled={busy || token.length !== 6}>{busy ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{stage.kind === "enroll" ? "Verify & finish setup" : "Verify & open Vault"}</Button>
       </form>
