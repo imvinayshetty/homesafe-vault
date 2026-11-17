@@ -107,7 +107,7 @@ function Index() {
               <span className="toggle-text">{light ? "Dark" : "Sage"}</span>
             </Button>
           </div>
-          <div className="flex flex-col items-end gap-0.5 text-right">
+          <div className="flex flex-col items-start gap-0.5 text-left md:items-end md:text-right">
             <span className="font-mono text-sm text-muted-foreground">{now?.toLocaleTimeString() ?? ""}</span>
             <span className="text-xs text-muted-foreground">Only sign-in is cloud-based · backups stay local</span>
           </div>
