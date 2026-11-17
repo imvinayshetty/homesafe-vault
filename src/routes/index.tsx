@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { LocalBackupWorkspace } from "@/components/local-backup-workspace";
 import { VaultAccess } from "@/components/vault-access";
 import { SampleTransfer } from "@/components/sample-transfer";
@@ -32,6 +32,9 @@ function Index() {
   const [mounted, setMounted] = useState(true);
   const [light, setLight] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
+  const [accountEmail, setAccountEmail] = useState("");
+  const [profileName, setProfileName] = useState("");
+  const onAuth = useCallback((ok: boolean, mail: string) => { setSignedIn(ok); setAccountEmail(mail); if (!ok) setProfileName(""); }, []);
   const [monitorReady, setMonitorReady] = useState(false);
   const [workspace, setWorkspace] = useState<"monitor" | "files">("monitor");
   const [showDemo, setShowDemo] = useState(false);
@@ -104,19 +107,20 @@ function Index() {
               <span className="toggle-text">{light ? "Dark" : "Sage"}</span>
             </Button>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col items-end gap-0.5 text-right">
             <span className="font-mono text-sm text-muted-foreground">{now?.toLocaleTimeString() ?? ""}</span>
+            <span className="text-xs text-muted-foreground">Only sign-in is cloud-based · backups stay local</span>
           </div>
         </header>
 
         <div className={`flex min-h-0 flex-col gap-4 ${showDemo ? "" : "flex-1 overflow-hidden"}`}>
-        <VaultAccess onAuthChange={setSignedIn} />
+        <VaultAccess greeting={profileName} onAuthChange={onAuth} />
         {signedIn && <>
           {monitorReady && <nav aria-label="Vault workspace" className="flex shrink-0 flex-wrap gap-3 border-b border-border pb-2">
             <Button variant={workspace === "monitor" ? "secondary" : "ghost"} onClick={() => setWorkspace("monitor")}>Monitoring</Button>
             <Button variant={workspace === "files" ? "secondary" : "ghost"} onClick={() => setWorkspace("files")}>Saved backups</Button>
           </nav>}
-          {workspace === "monitor" ? <LocalVaultConnection onReady={setMonitorReady} /> : <div className="min-h-0 flex-1 overflow-y-auto pr-1"><LocalBackupWorkspace /></div>}
+          {workspace === "monitor" ? <LocalVaultConnection key={accountEmail} email={accountEmail} onProfile={setProfileName} onReady={setMonitorReady} /> : <div className="min-h-0 flex-1 overflow-y-auto pr-1"><LocalBackupWorkspace /></div>}
         </>}
 
         </div>

@@ -64,3 +64,9 @@ cd vault-service && npm test
 - **Pair mobile device** button on the Awaiting connection card asks the service (over the owner-authenticated local socket) for a single-use 6-digit code valid 120 seconds; the dashboard shows the code, a countdown ring and a scannable `homesafe://pair?host=&port=&fp=&code=&email=&profile=&phone=` QR. Without pressing it, codes still rotate every 30 seconds.
 - Autostart templates for service-only installs: `vault-service/autostart/` (macOS LaunchAgent plist, systemd user unit, Windows hidden Task Scheduler script). The desktop app starts the service itself.
 - Screens fit the window without scrolling; only "Show sample monitoring" extends the page, and the Saved backups list scrolls inside its own panel.
+
+## Vault connection after Authy
+- The Authy-verified account email is used automatically; it is never asked again.
+- First time on this PC: **Name your profile** (own screen) → **Name this phone** → connect. Linking another phone for a remembered profile skips the profile step (Step 1 of 2).
+- Once the profile is known the top bar reads **Hi <profile> · Authy verified** instead of the email.
+- The header shows one line under the clock: "Only sign-in is cloud-based · backups stay local".

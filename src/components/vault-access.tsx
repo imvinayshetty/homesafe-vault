@@ -15,7 +15,7 @@ type Stage =
 const inputClass = "mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3 outline-none focus:ring-2 focus:ring-ring disabled:opacity-60";
 
 /** Cloud handles sign-in only; every backup file stays on local storage. */
-export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolean) => void }) {
+export function VaultAccess({ onAuthChange, greeting }: { onAuthChange?: (signedIn: boolean, email: string) => void; greeting?: string }) {
   const [enrollStep, setEnrollStep] = useState<"scan" | "pin">("scan");
   const [mode, setMode] = useState<"login" | "register">("login");
   const [stage, setStage] = useState<Stage>({ kind: "form" });
@@ -44,7 +44,7 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     return () => { active = false; sub.subscription.unsubscribe(); };
   }, []);
 
-  useEffect(() => { onAuthChange?.(stage.kind === "signed-in"); }, [stage.kind, onAuthChange]);
+  useEffect(() => { onAuthChange?.(stage.kind === "signed-in", stage.kind === "signed-in" ? stage.email.trim().toLowerCase() : ""); }, [stage, onAuthChange]);
 
   /** Decide the next step after password auth: enroll Authy, challenge, or done. */
   async function nextStep(): Promise<Stage> {
@@ -146,8 +146,8 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     setCopied(true); setTimeout(() => setCopied(false), 2000);
   };
 
-  if (stage.kind === "signed-in") return <section className="flex flex-wrap items-center justify-between gap-4 border-b border-border py-4">
-    <p className="flex min-w-0 flex-wrap items-center gap-2 text-sm"><ShieldCheck className="h-4 w-4 shrink-0 text-primary" /><span className="break-all">{stage.email}</span><span className="text-muted-foreground">Authy verified</span></p>
+  if (stage.kind === "signed-in") return <section className="flex shrink-0 flex-wrap items-center justify-between gap-4 border-b border-border py-2">
+    <p className="flex min-w-0 flex-wrap items-center gap-2 text-sm">{greeting ? <span className="truncate font-display text-2xl">Hi {greeting}</span> : <span className="break-all">{stage.email}</span>}<span className="flex items-center gap-1 text-muted-foreground"><ShieldCheck className="h-4 w-4 shrink-0 text-primary" />Authy verified</span></p>
     <Button variant="ghost" disabled={busy} onClick={() => void signOut()}><LogOut />Sign out</Button>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </section>;
