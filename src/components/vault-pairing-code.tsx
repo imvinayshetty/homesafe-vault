@@ -8,7 +8,7 @@ function CopyLine({ label, value }: { label: string; value: string }) {
   return <div className="min-w-0 text-left">
     <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</p>
     <div className="flex items-center gap-1">
-      <code className="min-w-0 select-all break-all font-mono text-xs text-foreground">{value}</code>
+      <code className="min-w-0 select-all break-words font-mono text-xs text-foreground">{value}</code>
       <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" aria-label={`Copy ${label.toLowerCase()}`} onClick={() => { void navigator.clipboard?.writeText(value).catch(() => {}); }}><Copy className="h-3 w-3" /></Button>
     </div>
   </div>;
