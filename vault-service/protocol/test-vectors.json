@@ -1,0 +1,9 @@
+{
+  "description": "HomeSafe phone protocol v1 canonical JSON. Flat object; keys sorted by Unicode code point (equivalently UTF-8 byte order, NOT UTF-16 or locale order); JSON.stringify with no whitespace; non-ASCII emitted as raw UTF-8, not \\u escapes; integers only.",
+  "vectors": [
+    { "name": "key order", "input": { "phone": "Pixel", "deviceId": "abc", "Zeta": 1, "action": "catalog", "challenge": "c1" }, "canonical": "{\"Zeta\":1,\"action\":\"catalog\",\"challenge\":\"c1\",\"deviceId\":\"abc\",\"phone\":\"Pixel\"}" },
+    { "name": "Devanagari profile and phone", "input": { "profile": "विनय", "phone": "मेरा फ़ोन", "requestId": "r1", "challenge": "c2" }, "canonical": "{\"challenge\":\"c2\",\"phone\":\"मेरा फ़ोन\",\"profile\":\"विनय\",\"requestId\":\"r1\"}" },
+    { "name": "emoji name and astral key ordering", "input": { "😀": "astral", "｡": "halfwidth", "name": "Custom_Bckup_181126_🎉" }, "canonical": "{\"name\":\"Custom_Bckup_181126_🎉\",\"｡\":\"halfwidth\",\"😀\":\"astral\"}" },
+    { "name": "numbers", "input": { "files": 500000, "bytes": 1099511627776, "zero": 0, "kind": "Full" }, "canonical": "{\"bytes\":1099511627776,\"files\":500000,\"kind\":\"Full\",\"zero\":0}" }
+  ]
+}

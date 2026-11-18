@@ -6,6 +6,12 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createInterface } from 'node:readline/promises';
 const run = promisify(execFile);
+export const CERT_LIFETIME_DAYS = 1825, CERT_WARNING_DAYS = 60;
+/** Certificate expiry summary; warns 60 days before. Never regenerate automatically: phones pin the fingerprint. */
+export function certificateStatus(validTo, now = Date.now()) {
+ const expiresAt = typeof validTo === 'number' ? validTo : Date.parse(validTo), left = expiresAt - now;
+ return { expiresAt, daysLeft: Math.floor(left / 86400000), expired: left <= 0, warning: left <= CERT_WARNING_DAYS * 86400000 };
+}
 export async function driveReady(root, expected) {
  const real = await fs.realpath(root), stat = await fs.lstat(root);
  if (stat.isSymbolicLink() || !stat.isDirectory() || path.basename(real)!=='HomeSafeBckup') throw new Error('Choose an existing real HomeSafeBckup folder on the connected drive');
@@ -42,7 +48,7 @@ export async function guidedInstall(stateDir) {
   if(process.platform==='win32') { const user=os.userInfo().username; await run('icacls.exe',[stateDir,'/inheritance:r','/grant:r',`${user}:(OI)(CI)F`]); }
   const configPath=path.join(stateDir,'config.json'); try {await fs.access(configPath);throw new Error('Already configured; existing keys will not be replaced');} catch(e) {if(e.code!=='ENOENT') throw e;}
   const cert=path.join(stateDir,'vault.crt'),key=path.join(stateDir,'vault.key'); for(const f of [cert,key]) {try {await fs.access(f);throw new Error('Certificate exists; use manual recovery');}catch(e){if(e.code!=='ENOENT')throw e;}}
-  await run('openssl',['req','-x509','-newkey','rsa:3072','-sha256','-nodes','-days','365','-keyout',key,'-out',cert,'-subj','/CN=HomeSafe Vault','-addext',`subjectAltName=IP:${ip}`]); await fs.chmod(key,0o600);
+  await run('openssl',['req','-x509','-newkey','rsa:3072','-sha256','-nodes','-days',String(CERT_LIFETIME_DAYS),'-keyout',key,'-out',cert,'-subj','/CN=HomeSafe Vault','-addext',`subjectAltName=IP:${ip}`]); await fs.chmod(key,0o600);
   await driveReady(drive.root, drive);
   const config={root:drive.root,driveIdentity:{dev:drive.dev,ino:drive.ino},instanceId:randomBytes(16).toString('hex'),origins:[origin.origin],adminToken:randomBytes(32).toString('base64url'),identityKey:randomBytes(32).toString('base64'),cert,key,lanHost:ip};
   await fs.writeFile(configPath,JSON.stringify(config,null,2),{flag:'wx',mode:0o600});
@@ -53,7 +59,7 @@ export async function guidedInstall(stateDir) {
    let ready=false; for(let i=0;i<30;i++){try {const r=await fetch('http://127.0.0.1:7878/v1/ready', {signal:AbortSignal.timeout(2000)});const b=await r.json();if(r.ok&&b.driveReady&&b.instanceId===config.instanceId){ready=true;break;}}catch{}await new Promise(r=>setTimeout(r,500));} if(!ready)throw new Error('Startup configured, but this service did not become ready; run doctor and check the drive/startup logs');
   }
   const fingerprint=createHash('sha256').update(new X509Certificate(await fs.readFile(cert)).raw).digest('hex');
-  console.log(`Setup complete. Phone address: https://${ip}:7879\nCertificate fingerprint: ${fingerprint}\n${startup?'Startup registered and drive/service verified.':'Run node src/cli.mjs start to start Vault.'}\nAllow port 7879 only on the private home network. Run node src/cli.mjs access for your private dashboard key.`);
+  console.log(`Setup complete. Phone address: https://${ip}:7443\nCertificate fingerprint: ${fingerprint}\n${startup?'Startup registered and drive/service verified.':'Run node src/cli.mjs start to start Vault.'}\nAllow port 7443 only on the private home network. Run node src/cli.mjs access for your private dashboard key.`);
   if(process.platform==='linux') console.log('Starts at login. For Raspberry Pi boot before login, explicitly enable user lingering with: sudo loginctl enable-linger '+os.userInfo().username);
  } finally {rl.close();}
 }

@@ -19,18 +19,15 @@ For an unattended Pi, after setup explicitly run `sudo loginctl enable-linger <y
 
 Run `node src/cli.mjs doctor` to repeat actual drive write/read verification, check certificate expiry, and confirm the service is ready. Existing settings and startup registrations are never silently replaced. If startup registration fails after configuration, keep the saved keys and use the manual start command; do not initialize again. The installer does not download Node/OpenSSL or change firewall/router settings. Windows and physical Raspberry Pi startup need hardware verification; tests here validate startup definitions and actual Linux drive checks.
 
-### Existing HomeSafe Android/iPhone app
+### HomeSafe Android/iPhone app
 
-Vault now accepts the native plugin protocol found in the HomeSafe project: `/v1/pair/begin`, `/v1/pair/confirm`, `/v1/device/challenge`, `/v1/backups` (signed catalog), `/v1/backup/start`, `/v1/backup/chunk`, `/v1/backup/finish`. Both phone implementations use raw Ed25519 public keys and sorted JSON signatures, not the alternate DER/bearer API described below. Chunk SHA-256, exact offsets, encrypted identity, exclusive writes and final disk readback are enforced.
+Vault speaks only **Phone protocol v1** (below). Build/install the native HomeSafe app from its own project; its browser preview cannot substitute. This Node service replaces HomeSafe's Python service; never run both, they share port 7443.
 
-Build/install the native HomeSafe app from its own project following its `MOBILE.md`; its browser preview cannot substitute. This chat cannot modify that project's code or install signed APK/IPA files. This Node service replaces HomeSafe's Python service; never run both, they share port 7443. Use this Vault service on port 7443.
+1. Start Vault (desktop app, guided installer or `start`). Sign into the dashboard with email/Authy and name the profile and phone.
+2. On the phone, scan the QR on the **Awaiting connection** card, find the Vault over Wi-Fi (mDNS), or type the address and grouped certificate fingerprint shown next to the code.
+3. Confirm the offered profile/phone on the phone, choose Full/Custom, pick files and start. The dashboard animation advances only from real service events.
 
-1. Run the guided installer and start Vault. Sign into this dashboard with email/Authy.
-2. Under **Local Vault monitoring**, enter the same HomeSafe account email, profile, new phone folder name and local owner access key. The email is an owner-selected local identifier, not independent proof of email ownership.
-3. On the installed HomeSafe phone app, enter `https://<private LAN IP>:7443`, the certificate fingerprint printed by setup/start, and the live six-digit Vault code. Confirm the offered profile/phone on the phone. This consumes the code; the dashboard shows verified identity only after signed confirmation.
-4. Choose Full/Custom on HomeSafe, pick permitted files, and start. Phone chunks update the real Vault animation; completion occurs only after final disk readback. Returning native phones use fresh signed device challenges and the selected matching destination. Click Done on Vault before another transfer.
-
-Cross-project source was inspected read-only. Native-protocol socket/disk tests pass; physical Android/iPhone TLS pinning, app installation and complete phone-to-dashboard operation are not verified here. Automatic discovery and QR handoff remain unavailable; use manual IP/fingerprint/code pairing.
+Native-protocol socket/disk tests pass; physical Android/iPhone TLS pinning and app installation are not verified here.
 
 ### Manual setup
 
@@ -39,7 +36,7 @@ Cross-project source was inspected read-only. Native-protocol socket/disk tests 
 3. Create a local TLS certificate outside the repository. With OpenSSL, for example:
 
 ```sh
-openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 -keyout vault.key -out vault.crt -subj "/CN=homesafe-vault.local" -addext "subjectAltName=DNS:homesafe-vault.local,IP:192.168.1.108"
+openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 1825 -keyout vault.key -out vault.crt -subj "/CN=homesafe-vault.local" -addext "subjectAltName=DNS:homesafe-vault.local,IP:192.168.1.108"
 ```
 
 The IP above is an **example**: replace it with your PC/Pi's actual home LAN IP. Keep the private key outside Git and grant access only to the account running Vault. On Windows, configure NTFS permissions for the key and `%USERPROFILE%\.homesafe-vault` (Node's POSIX file modes do not enforce Windows ACLs). On Linux/macOS use `chmod 600 vault.key`.
@@ -78,22 +75,58 @@ WantedBy=multi-user.target
 
 The service intentionally does not auto-restart after a crash while a stale lock exists. On Windows, use Task Scheduler at login with the same start command and working directory; do not run as administrator.
 
-## Alternate phone integration contract (for new native clients)
+## Phone protocol v1 (reference)
 
-The existing HomeSafe project has **not** been modified here; its supported existing protocol is documented above. The alternate API below is retained for new clients. Manual local IP connection is supported; automatic mDNS discovery, QR connection handoff and packaged native installers are not included. Browser-only mobile pages cannot securely substitute for a native key store and pinned TLS transport.
+### Ports
+- `7443/tcp` HTTPS on the PC/Pi's home Wi-Fi address — phones only. Allow it on the private network only; never port-forward.
+- `7878/tcp` loopback only — dashboard WebSocket `/v1/transfer-events` (origin-checked, owner key) and `GET /v1/ready`.
+- The service polls the default-route address every 30 s. On a change it restarts the phone listener on the new address and re-advertises mDNS. The certificate is **not** regenerated (phones pin its fingerprint).
 
-- Connect to `https://<Vault LAN IP>:7443`. Pin the SHA-256 certificate fingerprint displayed by the local start command, verifying it with the owner outside this connection. Never disable certificate verification in a production phone client. A self-signed certificate requires explicit native pinning; it will not be trusted automatically.
-- Generate an Ed25519 device key in the phone's secure keystore; never send the private key. Retain that key across backups. The public key is base64-encoded DER SPKI.
-- `POST /v1/challenge` returns a 30-second, single-use `challenge`; requests are rate-limited to five per IP per minute.
-- `POST /v1/pair` sends `{profile, phone, code, publicKey, challenge, signature}`. `signature` is base64 Ed25519 over the UTF-8 bytes of `JSON.stringify(["homesafe-pair-v1", challenge, code, profile, phone, publicKey])`. `code` is the **six-digit pairing code**, not an Authy token. It rotates every 30 seconds only while awaiting; verification consumes it.
-- The service checks the exact selected destination, signature, challenge and code, enrolls a new encrypted identity or verifies the existing one, then returns `{token, expiresIn:3600}`. Keep the token in memory. Phone folder names are unique within a profile. Existing browser/legacy phone folders are not adopted or overwritten; use a new phone name for native enrollment.
-- After successful verification, show Full/Custom selection on the **phone**, not Vault. `POST /v1/backups` with `Authorization: Bearer <token>` sends `{kind:"Full"|"Custom", name?:string, files:[{path, bytes, sha256}]}`. Names default to `Full_Bckup_DDMMYY` / `Custom_Bckup_DDMMYY` in the Vault machine's local date. Existing same-date backups require a unique suffix. Relative paths must be safe; duplicate/case-colliding paths and reserved metadata are rejected. Manifest limit: 10,000 files and 2 MiB request body.
-- Response `{id,name}` reserves a new backup. `PUT /v1/backups/<id>/files/<zero-based index>` streams each exact file body sequentially with the same bearer token. SHA-256, size and disk sync must succeed before file progress advances. Progress is completed files / declared files, not estimated elapsed time. Requests time out after two minutes; transfers idle for three minutes fail. Interrupted backups remain incomplete and are never reused automatically.
-- `POST /v1/backups/<id>/complete` re-reads every file and verifies SHA-256 from disk, then writes the completed manifest and emits completion. `POST .../cancel` records failure. One active transfer at a time; pair again after completion/failure.
+### Certificate
+Self-signed, 5-year lifetime (1825 days). Phones pin `fp` = lowercase hex SHA-256 of the DER certificate. The dashboard shows the expiry next to the pairing code and warns 60 days before; `doctor` reports days left and fails when expired.
+
+### Pairing URI (QR)
+`homesafe://pair?v=1&host=<IPv4>&port=7443&fp=<64 hex>&code=<6 digits>&email=<account email>`
+Profile and phone are **not** in the URI; the phone receives them in the `/v1/pair/begin` response. Codes rotate every 30 s while awaiting; **Pair mobile device** mints a single-use 120 s code. Manual fallback: the dashboard shows `https://<host>:7443` and the fingerprint grouped in 4-hex blocks, both copyable.
+
+### mDNS
+Service type `_homesafe._tcp.local.`, instance name `HomeSafe Vault <short random suffix>` (never the PC hostname), port 7443, TXT `v=1`, `fp=<fingerprint>`.
+
+### Signatures
+Ed25519; `publicKey` is the raw 32-byte key, base64. The signed bytes are **canonical JSON** of a flat object: keys sorted by Unicode code point (= UTF-8 byte order, not UTF-16/locale order), no whitespace, non-ASCII as raw UTF-8, integers only. Vectors with key order, Devanagari, emoji and large numbers: `protocol/test-vectors.json` (checked by `test/protocol.test.mjs`).
+
+| Route (POST, JSON) | Request | Signed fields | Response |
+| --- | --- | --- | --- |
+| `/v1/pair/begin` | `email, code, deviceId, publicKey, signature` | `email, code, deviceId, publicKey` | `requestId, challenge, expiresAt, email, profile, phone` |
+| `/v1/pair/confirm` | `requestId, signature` | `requestId, challenge, profile, phone` | `connected, email, profile, phone` |
+| `/v1/device/challenge` | `deviceId` | — | `challenge, expiresAt` (30 s, single use) |
+| `/v1/backups` | `deviceId, challenge, signature` | `deviceId, challenge, action:"catalog"` | `backups[]` |
+| `/v1/backup/start` | `deviceId, challenge, name, kind, files[≤5000], totalFiles?, totalBytes?, signature` | `deviceId, challenge, action:"backup", name, kind, files:<totalFiles>, bytes:<totalBytes>` | `transferId, token, manifestComplete` |
+| `/v1/backup/files` | `transferId, token, files[≤5000]` | — (transfer token) | `received, manifestComplete` |
+| `/v1/backup/chunk` | raw body ≤4 MiB; headers `X-Transfer-Id, X-Transfer-Token, X-File-Index, X-Offset, X-Sha256` | — | `received` |
+| `/v1/backup/finish` | `transferId, token` | — | `state:"complete", sentBytes, totalBytes` |
+
+`files` entries are `{path, bytes}`. Manifest paging: send further pages with `/v1/backup/files` **before the first chunk**; chunks are refused until the manifest is complete. Limits: 5,000 entries and 2 MiB per request, 500,000 files per backup. Chunks must arrive at the exact next offset with a matching SHA-256; existing files and backups are never overwritten. Names default to `Full_Bckup_DDMMYY` / `Custom_Bckup_DDMMYY` (Vault's local date); same-date backups need a unique suffix. `/v1/pair/begin` is limited to five attempts per IP per minute. Requests with an `Origin` header are rejected. `GET /v1/info` returns `{name, version:1}`.
+
+### Errors
+Every failure returns `{ "error": "<fixed message>", "code": "<code>" }`. Messages never contain file names, emails, profile or phone names.
+
+| code | HTTP | meaning |
+| --- | --- | --- |
+| `code_expired` | 400 | pairing code, confirmation or device challenge expired / wrong |
+| `wrong_account` | 400 | email or device not matching the account/phone selected on the Vault |
+| `phone_revoked` | 400 | phone was removed on the dashboard; pair again |
+| `drive_unavailable` | 503 | backup drive disconnected or replaced |
+| `name_exists` | 409 | a backup with this name (or same date without suffix) exists |
+| `no_space` | 507 | not enough free space for the declared total bytes |
+| `transfer_active` | 409 | another backup is in progress |
+| `too_many_files` | 400 | page over 5,000 or backup over 500,000 files |
+| `rate_limited` | 429 | too many pairing attempts |
+| `invalid_request` | 400 | bad signature, field, offset, digest or unknown route |
 
 ## Dashboard protocol and privacy
 
-`ws://127.0.0.1:7878/v1/transfer-events` checks the exact configured browser Origin and a first `{type:"authenticate",token:<owner key>}` message. The key is not passed in the URL or persisted by the dashboard. After `service_ready`, the dashboard sends `{type:"select_destination",profile,phone}`. Only authenticated monitors receive codes and ordered real transfer events. Reconnecting replays the latest sequence. `{type:"reset"}` returns to awaiting only after a finished/failed transfer. An authenticated monitor may send `{type:"revoke_phone",profile,phone}`; revocation is persisted and immediately invalidates its sessions. Live phone-list/revoke controls are not yet surfaced in the dashboard; sample controls remain demonstrations.
+`ws://127.0.0.1:7878/v1/transfer-events` checks the exact configured browser Origin and a first `{type:"authenticate",token:<owner key>}` message. The key is not passed in the URL or persisted by the dashboard. After `service_ready`, the dashboard sends `{type:"select_destination",profile,phone}`. Only authenticated monitors receive codes and ordered real transfer events. Reconnecting replays the latest sequence. `{type:"reset"}` returns to awaiting only after a finished/failed transfer. An authenticated monitor may send `{type:"revoke_phone",profile,phone}`; revocation is persisted; the phone then receives `phone_revoked` and any of its active transfers fail. Live phone-list/revoke controls are not yet surfaced in the dashboard; sample controls remain demonstrations.
 
 `events.jsonl` stores only event type, timestamp and stalled stage, without email/profile names, phone names, tokens, codes or file paths. It rotates at approximately 1 MiB, keeping one previous file. No analytics service receives these events. Drive health UI integration is separate; the service uses actual filesystem free space to reject oversized transfers but does not yet provide temperature/health telemetry.
 
@@ -101,4 +134,4 @@ AES-256-GCM protects device identity, **not backup payloads**; files remain read
 
 ## Verification
 
-`npm test` exercises real sockets, signed enrollment, streaming disk writes, SHA-256 readback, expiry, identity mismatch, path rejection, duplicate dates, symlinks and revocation. Plain HTTP is available only to explicitly configured loopback test fixtures; the shipped CLI always requires TLS. Tests ran on Linux, not physical Windows, Raspberry Pi USB hardware, or Android/iPhone. The existing Authy gate must be passed by the user before dashboard monitoring; a password-only session is insufficient.
+`npm test` exercises real sockets, signed native enrollment, error codes, canonical-JSON vectors, manifest paging, address-change restarts, certificate expiry, streaming disk writes, SHA-256 readback, expiry, identity mismatch, path rejection, duplicate dates, symlinks and revocation. Plain HTTP is available only to explicitly configured loopback test fixtures; the shipped CLI always requires TLS. Tests ran on Linux, not physical Windows, Raspberry Pi USB hardware, or Android/iPhone. The existing Authy gate must be passed by the user before dashboard monitoring; a password-only session is insufficient.

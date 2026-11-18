@@ -59,9 +59,11 @@ cd vault-service && npm test
 
 ## Zero-configuration automation
 - The Vault service follows the current home Wi-Fi address (default-route IPv4) on every start; no host setting.
-- The desktop app finds the backup drive itself: an existing `HomeSafeBckup` folder on any external drive (Windows D:–Z:, macOS `/Volumes`, Linux/Pi `/media`, `/mnt`), otherwise creates it on the external drive with most free space. A folder picker appears only when no USB drive is plugged in.
-- Phones discover the Vault over Wi-Fi via mDNS `_homesafe._tcp.local.` on port 7443 with the certificate fingerprint in the TXT record.
-- **Pair mobile device** button on the Awaiting connection card asks the service (over the owner-authenticated local socket) for a single-use 6-digit code valid 120 seconds; the dashboard shows the code, a countdown ring and a scannable `homesafe://pair?host=&port=&fp=&code=&email=&profile=&phone=` QR. Without pressing it, codes still rotate every 30 seconds.
+- The desktop app looks for the backup drive itself (an existing `HomeSafeBckup` folder, else the external drive with most free space) but never creates or adopts the folder silently: a dialog shows the drive name, size and free space with **Use this drive** / **Choose another folder**. The answer is remembered with the drive identity; a replaced drive is rejected.
+- The Wi-Fi address is re-checked every 30 seconds; on a change the phone connection restarts on the new address and is re-advertised. The 5-year certificate is kept (phones pin it); the dashboard shows its expiry and warns 60 days before.
+- Phones discover the Vault over Wi-Fi via mDNS `_homesafe._tcp.local.` (name "HomeSafe Vault" + short random suffix, TXT `v`, `fp`) on port 7443.
+- **Pair mobile device** button on the Awaiting connection card asks the service (over the owner-authenticated local socket) for a single-use 6-digit code valid 120 seconds; the dashboard shows the code, a countdown ring and a scannable `homesafe://pair?v=1&host=&port=&fp=&code=&email=` QR, plus a copyable `https://<host>:7443` address and grouped certificate fingerprint for manual pairing. Without pressing it, codes still rotate every 30 seconds.
+- Phones use only Phone protocol v1 (signed native protocol with `{error, code}` errors and manifest paging); the old bearer-token API was removed. Full reference: `vault-service/README.md`.
 - Autostart templates for service-only installs: `vault-service/autostart/` (macOS LaunchAgent plist, systemd user unit, Windows hidden Task Scheduler script). The desktop app starts the service itself.
 - Screens fit the window without scrolling; only "Show sample monitoring" extends the page, and the Saved backups list scrolls inside its own panel.
 

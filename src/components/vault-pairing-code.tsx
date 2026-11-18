@@ -1,8 +1,18 @@
 import { useEffect, useState } from "react";
 import QRCode from "qrcode";
-import { KeyRound, Smartphone } from "lucide-react";
+import { Copy, KeyRound, ShieldAlert, Smartphone } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { PAIRING_CODE_LIFETIME_MS, MINTED_PAIRING_CODE_LIFETIME_MS, type PairingCode } from "@/lib/vault-daemon";
+import { PAIRING_CODE_LIFETIME_MS, MINTED_PAIRING_CODE_LIFETIME_MS, CERT_WARNING_MS, groupFingerprint, manualAddress, type PairingCode } from "@/lib/vault-daemon";
+
+function CopyLine({ label, value }: { label: string; value: string }) {
+  return <div className="min-w-0 text-left">
+    <p className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</p>
+    <div className="flex items-center gap-1">
+      <code className="min-w-0 select-all break-all font-mono text-xs text-foreground">{value}</code>
+      <Button type="button" size="icon" variant="ghost" className="h-6 w-6 shrink-0" aria-label={`Copy ${label.toLowerCase()}`} onClick={() => { void navigator.clipboard?.writeText(value).catch(() => {}); }}><Copy className="h-3 w-3" /></Button>
+    </div>
+  </div>;
+}
 
 /** Sample codes never authenticate; live codes and QR payloads originate only from the local service. */
 export function VaultPairingCode({ sample, pairing, onMint }: { sample?: boolean; pairing?: PairingCode | null; onMint?: (() => void) | undefined }) {
@@ -48,5 +58,14 @@ export function VaultPairingCode({ sample, pairing, onMint }: { sample?: boolean
       {onMint && <Button type="button" size="sm" variant="secondary" onClick={onMint}><Smartphone />Pair mobile device</Button>}
       {sample && <p className="text-xs text-warning">Sample code · cannot pair a phone</p>}
     </div>
+    {!sample && pairing && (manualAddress(pairing) || pairing.fingerprint) && <div className="w-full max-w-60 space-y-1.5 border-t border-border pt-3 sm:border-l sm:border-t-0 sm:pl-4 sm:pt-0" aria-label="Manual pairing details">
+      <p className="text-left text-xs text-muted-foreground">No QR? Type these in the HomeSafe app:</p>
+      {manualAddress(pairing) && <CopyLine label="Vault address" value={manualAddress(pairing) as string} />}
+      {pairing.fingerprint && <CopyLine label="Certificate fingerprint" value={groupFingerprint(pairing.fingerprint)} />}
+      {pairing.certExpiresAt && <p className={`flex items-center gap-1 text-left text-[11px] ${pairing.certExpiresAt - now <= CERT_WARNING_MS ? "text-warning" : "text-muted-foreground"}`}>
+        {pairing.certExpiresAt - now <= CERT_WARNING_MS && <ShieldAlert className="h-3 w-3 shrink-0" />}
+        Certificate valid until {new Date(pairing.certExpiresAt).toLocaleDateString()}{pairing.certExpiresAt - now <= CERT_WARNING_MS ? " · expires soon, phones will need pairing again" : ""}
+      </p>}
+    </div>}
   </div>;
 }

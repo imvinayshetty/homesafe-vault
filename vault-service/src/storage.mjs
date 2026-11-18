@@ -52,7 +52,7 @@ export async function createTransfer(root, key, identity, input, now = new Date(
   if (names.some(n => n.toLowerCase() === name.toLowerCase())) throw new Error('Backup exists; rename it without overwriting');
   if (names.some(n => /^(Full|Custom)_Bckup_/.test(n) && n.includes(`_Bckup_${date}`)) && name === base) throw new Error('A backup exists for this date; add a unique suffix');
   const space = await fs.statfs(folder), bytes = manifest.files.reduce((n, f) => n + f.bytes, 0);
-  if (bytes > space.bavail * space.bsize) throw new Error('Insufficient drive space');
+  if (Math.max(bytes, Number(input.declaredBytes) || 0) > space.bavail * space.bsize) throw new Error('Insufficient drive space');
   const destination = await directory(folder, name, true);
   const transfer = { ...manifest, name, date, bytes, destination, completed: new Set(), createdAt: now.toISOString() };
   await writeManifest(transfer, false);

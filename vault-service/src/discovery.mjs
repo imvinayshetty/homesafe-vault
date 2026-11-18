@@ -34,7 +34,7 @@ export async function externalDriveRoots(platform = process.platform) {
     for (const base of ['/media', '/mnt', '/run/media']) for (const d of await list(base)) { out.push(d); for (const sub of await list(d)) out.push(sub); }
   }
   const mounts = [];
-  for (const r of out) { const st = await fs.statfs(r).catch(() => null); if (st && st.blocks > 0) mounts.push({ root: r, freeBytes: st.bavail * st.bsize }); }
+  for (const r of out) { const st = await fs.statfs(r).catch(() => null); if (st && st.blocks > 0) mounts.push({ root: r, name: path.basename(r) || r, freeBytes: st.bavail * st.bsize, totalBytes: st.blocks * st.bsize }); }
   return mounts;
 }
 
@@ -45,10 +45,24 @@ export async function findBackupRoot(drives) {
   return best ? { root: path.join(best.root, 'HomeSafeBckup'), existing: false } : null;
 }
 
-/** Advertise `_homesafe._tcp.local.` so phones find the Vault and pin its certificate without typing. */
-export async function advertise({ port, fingerprint, name = os.hostname() }) {
+/** mDNS instance name: "HomeSafe Vault" plus a short random suffix — never the PC's hostname. */
+export const mdnsName = (suffix = Math.random().toString(16).slice(2, 6)) => `HomeSafe Vault ${suffix}`;
+/** Advertise `_homesafe._tcp.local.` with TXT v and fp only, so phones find the Vault and pin its certificate. */
+export async function advertise({ port, fingerprint, name = mdnsName() }) {
   const { Bonjour } = await import('bonjour-service');
   const bonjour = new Bonjour();
-  const service = bonjour.publish({ name: `HomeSafe Vault ${name}`.slice(0, 63), type: 'homesafe', protocol: 'tcp', port, txt: { v: '1', name, fp: fingerprint ?? '' } });
+  const service = bonjour.publish({ name: name.slice(0, 63), type: 'homesafe', protocol: 'tcp', port, txt: { v: '1', fp: fingerprint ?? '' } });
   return { service, stop: () => new Promise(r => { try { bonjour.unpublishAll(() => { bonjour.destroy(); r(); }); } catch { r(); } }) };
+}
+
+/** Poll the default-route address; on change call onChange (restart + re-advertise). A failed restart is retried next poll. */
+export function watchAddress({ initial, poll = defaultRouteIPv4, onChange, interval = 30000, onError = () => {} }) {
+  let current = initial, busy = false;
+  const check = async () => {
+    if (busy) return; busy = true;
+    try { const next = await poll(); if (next && next !== current) { await onChange(next, current); current = next; } }
+    catch (e) { onError(e); } finally { busy = false; }
+  };
+  const timer = setInterval(check, interval); timer.unref?.();
+  return { check, stop: () => clearInterval(timer), get current() { return current; } };
 }

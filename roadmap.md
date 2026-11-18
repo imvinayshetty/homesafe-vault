@@ -18,5 +18,7 @@
 - [x] Add selected-file backups, date naming, duplicate protection and location recovery.
 - [x] Show Android/iPhone limitations and distinguish browser identity from native phone enrollment.
 - [x] Test rules and verify encryption, file readback and duplicate handling using a browser folder adapter; native disk permission cannot be automated here.
-- [ ] HomeSafe mobile enrollment and LAN transfer: blocked on native companion software and changes in the HomeSafe project.- [x] Zero-config automation: auto IP/drive, mDNS, in-app Pair mobile device with 120s code + QR, autostart templates, no-scroll layout.
-- [ ] Build Windows setup: on hold — user has more changes to describe first.
+- [ ] HomeSafe mobile enrollment and LAN transfer: blocked on native companion software and changes in the HomeSafe project.
+- [x] Zero-config automation: auto IP/drive, mDNS, in-app Pair mobile device with 120s code + QR, autostart templates, no-scroll layout.
+- [ ] Rebuild Windows setup with protocol v1 changes: waiting for the user to say build.
+- [x] Align Vault with HomeSafe phone protocol v1: v1 QR URI, manual fallback, drive confirmation dialog, IP-change restart, 5-year certificate, mDNS name, legacy API removed, error codes, code-point canonical JSON with vectors, manifest paging, docs.

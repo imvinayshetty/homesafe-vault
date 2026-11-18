@@ -33,7 +33,7 @@ export function TransferStatus({ profile, phone, email = "", accessKey = "" }: {
         } catch { return; }
         const e = parseDaemonEvent(m.data); if (!e) return;
         if (e.type === "pairing_code") {
-          setPairing({ code: e.code, expiresAt: Math.min(e.expiresAt, Date.now() + MINTED_PAIRING_CODE_LIFETIME_MS), ...(e.qr ? { qr: e.qr } : {}), ...(e.fingerprint ? { fingerprint: e.fingerprint } : {}) });
+          { const { type: _t, ...code } = e; setPairing({ ...code, expiresAt: Math.min(e.expiresAt, Date.now() + MINTED_PAIRING_CODE_LIFETIME_MS) }); }
           return;
         }
         if (e.type === "phone_connecting") { setPairing(null); if (stateRef.current.stage > 1) return; }

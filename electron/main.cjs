@@ -32,13 +32,32 @@ let service = null, win = null, lastError = '';
 
 const discovery = () => import(pathToFileURL(path.join(serviceDir, 'src', 'discovery.mjs')).href);
 async function lanIP() { return (await discovery()).defaultRouteIPv4(); }
-// Zero-config drive choice: reuse an existing HomeSafeBckup folder, else the external drive with most free space.
-async function autoBackupRoot() {
+const gib = n => `${(n / 1024 ** 3).toFixed(1)} GB`;
+// Never create or adopt HomeSafeBckup silently: show the drive and let the owner confirm or pick another folder.
+async function confirmDrive(target, drive) {
+  const r = await dialog.showMessageBox({ type: 'question', title: 'HomeSafe Vault setup', buttons: ['Use this drive', 'Choose another folder'], defaultId: 0, cancelId: 1, noLink: true,
+    message: `Back up phones to "${drive.name}"?`,
+    detail: `Drive: ${drive.name}\nSize: ${gib(drive.totalBytes)}\nFree space: ${gib(drive.freeBytes)}\n\nBackups will be saved in:\n${target}\n\n${drive.existing ? 'This existing HomeSafeBckup folder will be used.' : 'A new HomeSafeBckup folder will be created.'}` });
+  return r.response === 0;
+}
+async function driveInfo(dir) { const st = await fsp.statfs(dir); return { name: path.basename(dir) || dir, totalBytes: st.blocks * st.bsize, freeBytes: st.bavail * st.bsize }; }
+async function chooseBackupRoot() {
   const d = await discovery();
-  const found = await d.findBackupRoot(await d.externalDriveRoots());
-  if (!found) return null;
-  if (!found.existing) await fsp.mkdir(found.root);
-  return found.root;
+  const drives = await d.externalDriveRoots().catch(() => []);
+  const found = await d.findBackupRoot(drives);
+  if (found) {
+    const drive = drives.find(x => found.root.startsWith(x.root));
+    if (await confirmDrive(found.root, { ...drive, existing: found.existing })) { if (!found.existing) await fsp.mkdir(found.root); return found.root; }
+  } else {
+    await dialog.showMessageBox({ type: 'info', title: 'HomeSafe Vault setup', message: 'Plug in your USB backup drive, then choose it.', detail: 'This is a one-time step. Nothing is uploaded; backups stay on this drive.' });
+  }
+  for (;;) {
+    const pick = await dialog.showOpenDialog({ title: 'Choose your backup drive or its HomeSafeBckup folder', properties: ['openDirectory'] });
+    if (pick.canceled || !pick.filePaths[0]) throw new Error('No backup drive chosen. Plug in your USB drive and reopen HomeSafe Vault.');
+    const picked = pick.filePaths[0], target = path.basename(picked) === 'HomeSafeBckup' ? picked : path.join(picked, 'HomeSafeBckup');
+    const existing = fs.existsSync(target);
+    if (await confirmDrive(target, { ...(await driveInfo(existing ? target : picked)), name: path.basename(path.dirname(target)) || path.dirname(target), existing })) { if (!existing) await fsp.mkdir(target); return target; }
+  }
 }
 
 async function firstRunSetup() {
@@ -51,14 +70,7 @@ async function firstRunSetup() {
     if (changed) await fsp.writeFile(configPath, JSON.stringify(existing, null, 2), { mode: 0o600 });
     return existing;
   }
-  let chosen = await autoBackupRoot().catch(() => null);
-  if (!chosen) {
-    // Only when no USB drive is plugged in: ask once.
-    await dialog.showMessageBox({ type: 'info', title: 'HomeSafe Vault setup', message: 'Plug in your USB backup drive, then choose its HomeSafeBckup folder.', detail: 'This is a one-time step. Nothing is uploaded; backups stay on this drive.' });
-    const pick = await dialog.showOpenDialog({ title: 'Select HomeSafeBckup folder', properties: ['openDirectory', 'createDirectory'] });
-    if (pick.canceled || !pick.filePaths[0]) throw new Error('No backup drive found. Plug in your USB drive and reopen HomeSafe Vault.');
-    chosen = pick.filePaths[0];
-  }
+  const chosen = await chooseBackupRoot(); // the answer is remembered in config.json with the drive identity
   const root = await fsp.realpath(chosen);
   if (path.basename(root) !== 'HomeSafeBckup') throw new Error('Select the folder named HomeSafeBckup itself');
   const probe = path.join(root, `.homesafe-probe-${crypto.randomBytes(6).toString('hex')}`);
@@ -67,7 +79,7 @@ async function firstRunSetup() {
   const st = await fsp.stat(root);
   await fsp.mkdir(stateDir, { recursive: true, mode: 0o700 });
   const selfsigned = require('selfsigned');
-  const pems = selfsigned.generate([{ name: 'commonName', value: 'HomeSafe Vault' }], { days: 365, keySize: 2048, algorithm: 'sha256', extensions: [{ name: 'subjectAltName', altNames: [{ type: 7, ip }] }] });
+  const pems = selfsigned.generate([{ name: 'commonName', value: 'HomeSafe Vault' }], { days: 1825, keySize: 2048, algorithm: 'sha256', extensions: [{ name: 'subjectAltName', altNames: [{ type: 7, ip }] }] });
   const cert = path.join(stateDir, 'vault.crt'), key = path.join(stateDir, 'vault.key');
   await fsp.writeFile(cert, pems.cert, { flag: 'wx' }); await fsp.writeFile(key, pems.private, { flag: 'wx', mode: 0o600 });
   const config = { root, driveIdentity: { dev: st.dev, ino: st.ino }, instanceId: crypto.randomBytes(16).toString('hex'), origins: [ORIGIN], adminToken: crypto.randomBytes(32).toString('base64url'), identityKey: crypto.randomBytes(32).toString('base64'), cert, key, lanHost: ip };

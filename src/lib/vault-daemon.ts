@@ -3,10 +3,15 @@ export const DAEMON_URL = "ws://127.0.0.1:7878/v1/transfer-events";
 export const PAIRING_CODE_LIFETIME_MS = 30_000;
 /** "Pair Mobile Device" codes are single-use and last two minutes. */
 export const MINTED_PAIRING_CODE_LIFETIME_MS = 120_000;
-export interface PairingCode { code: string; expiresAt: number; qr?: string; fingerprint?: string }
+export interface PairingCode { code: string; expiresAt: number; qr?: string; fingerprint?: string; host?: string; port?: number; certExpiresAt?: number }
+/** Warn this long before the Vault's phone certificate expires. */
+export const CERT_WARNING_MS = 60 * 86_400_000;
+/** "ab12cd…" → "AB12 CD34 …" for reading aloud / comparing on the phone. */
+export const groupFingerprint = (fp: string) => fp.toUpperCase().match(/.{1,4}/g)?.join(" ") ?? "";
+export const manualAddress = (p: Pick<PairingCode, "host" | "port">) => p.host && p.port ? `https://${p.host}:${p.port}` : null;
 
 export type DaemonEvent =
-  | { type: "pairing_code"; code: string; expiresAt: number; qr?: string; fingerprint?: string }
+  | ({ type: "pairing_code" } & PairingCode)
   | { type: "phone_connecting" }
   | { type: "pairing_verified"; profile: string; phone: string }
   | { type: "transfer_started" }
@@ -26,6 +31,9 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent | null {
         const e: DaemonEvent = { type: v.type, code: v.code, expiresAt: v.expiresAt };
         if (typeof v.qr === "string" && v.qr.startsWith("homesafe://pair?") && v.qr.length < 1000) e.qr = v.qr;
         if (typeof v.fingerprint === "string" && /^[a-f0-9]{64}$/.test(v.fingerprint)) e.fingerprint = v.fingerprint;
+        if (typeof v.host === "string" && /^[a-zA-Z0-9.:-]{1,253}$/.test(v.host)) e.host = v.host;
+        if (Number.isInteger(v.port) && v.port > 0 && v.port < 65536) e.port = v.port;
+        if (Number.isFinite(v.certExpiresAt)) e.certExpiresAt = v.certExpiresAt;
         return e;
       }
       case "phone_connecting": case "transfer_started": case "transfer_completed": return { type: v.type };
