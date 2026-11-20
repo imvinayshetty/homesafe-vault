@@ -48,22 +48,61 @@ test('rate limit after five pairing attempts per minute', async () => {
   finally { await h.close(); }
 });
 
-test('manifest paging: extra pages before the first chunk, chunks refused until complete', async () => {
+const pagedStart = async (h, name, fileCount, bytes) => { const c = await h.challenge(); return h.post('/v1/backup/start', { deviceId: h.deviceId, challenge: c, name, kind: 'Full', files: [], fileCount, bytes, signature: h.signature({ deviceId: h.deviceId, challenge: c, action: 'backup', name, kind: 'Full', files: fileCount, bytes }) }); };
+const sendChunk = (h, s, index, text) => { const b = Buffer.from(text); return fetch(h.base + '/v1/backup/chunk', { method: 'POST', headers: { 'X-Transfer-Id': s.transferId, 'X-Transfer-Token': s.token, 'X-File-Index': String(index), 'X-Offset': '0', 'X-Sha256': createHash('sha256').update(b).digest('hex') }, body: b }); };
+const page = (h, s, offset, files) => h.call('/v1/backup/files', { transferId: s.transferId, token: s.token, offset, files });
+
+test('paged manifest: files [] with fileCount, offset-ordered pages, chunks only once complete', async () => {
   const h = await harness();
   try {
     h.select(); await h.pair();
-    const name = 'Full_Bckup_' + today(), c = await h.challenge(), page1 = [{ path: 'one.txt', bytes: 3 }], page2 = [{ path: 'two.txt', bytes: 3 }];
-    const started = await h.post('/v1/backup/start', { deviceId: h.deviceId, challenge: c, name, kind: 'Full', files: page1, totalFiles: 2, totalBytes: 6, signature: h.signature({ deviceId: h.deviceId, challenge: c, action: 'backup', name, kind: 'Full', files: 2, bytes: 6 }) });
-    assert.equal(started.manifestComplete, false);
-    const send = (index, text) => { const b = Buffer.from(text); return fetch(h.base + '/v1/backup/chunk', { method: 'POST', headers: { 'X-Transfer-Id': started.transferId, 'X-Transfer-Token': started.token, 'X-File-Index': String(index), 'X-Offset': '0', 'X-Sha256': createHash('sha256').update(b).digest('hex') }, body: b }); };
-    assert.equal((await send(0, 'one')).status, 400);
-    const dupe = await h.call('/v1/backup/files', { transferId: started.transferId, token: started.token, files: [{ path: 'ONE.txt', bytes: 3 }] }); assert.equal(dupe.status, 400);
-    const more = await h.post('/v1/backup/files', { transferId: started.transferId, token: started.token, files: page2 }); assert.deepEqual(more, { received: 2, manifestComplete: true });
-    assert.equal((await send(0, 'one')).status, 200); assert.equal((await send(1, 'two')).status, 200);
-    const late = await h.call('/v1/backup/files', { transferId: started.transferId, token: started.token, files: [{ path: 'three.txt', bytes: 0 }] }); assert.equal(late.status, 400);
-    assert.equal((await h.post('/v1/backup/finish', { transferId: started.transferId, token: started.token })).state, 'complete');
+    const name = 'Full_Bckup_' + today(), s = await pagedStart(h, name, 2, 6);
+    assert.equal(s.manifestComplete, false);
+    const early = await sendChunk(h, s, 0, 'one'); assert.equal(early.status, 400); assert.equal((await early.json()).code, 'too_many_files');
+    assert.deepEqual((await page(h, s, 0, [{ path: 'one.txt', bytes: 3 }])).body, { received: 1, manifestComplete: false });
+    assert.equal((await page(h, s, 1, [{ path: 'ONE.txt', bytes: 3 }])).status, 400);
+    assert.deepEqual((await page(h, s, 1, [{ path: 'two.txt', bytes: 3 }])).body, { received: 2, manifestComplete: true });
+    assert.equal((await sendChunk(h, s, 0, 'one')).status, 200); assert.equal((await sendChunk(h, s, 1, 'two')).status, 200);
+    assert.equal((await page(h, s, 2, [{ path: 'three.txt', bytes: 0 }])).status, 400);
+    assert.equal((await h.post('/v1/backup/finish', { transferId: s.transferId, token: s.token })).state, 'complete');
     assert.equal(await fs.readFile(path.join(h.root, 'Owner', 'Pixel', name, 'two.txt'), 'utf8'), 'two');
-    assert.equal((await h.wait(e => e.type === 'transfer_progress')).total, 2);
+  } finally { await h.close(); }
+});
+
+test('paged manifest: out-of-order offsets (gaps and repeats) are rejected', async () => {
+  const h = await harness();
+  try {
+    h.select(); await h.pair();
+    const s = await pagedStart(h, 'Full_Bckup_' + today(), 3, 3);
+    assert.equal((await page(h, s, 1, [{ path: 'a', bytes: 1 }])).body.code, 'invalid_request');
+    assert.equal((await page(h, s, 0, [{ path: 'a', bytes: 1 }])).status, 200);
+    assert.equal((await page(h, s, 0, [{ path: 'b', bytes: 1 }])).body.code, 'invalid_request');
+    assert.equal((await page(h, s, 2, [{ path: 'b', bytes: 1 }])).body.code, 'invalid_request');
+  } finally { await h.close(); }
+});
+
+test('paged manifest: overflow beyond fileCount and fileCount above 500,000 are rejected', async () => {
+  const h = await harness();
+  try {
+    h.select(); await h.pair();
+    const name = 'Full_Bckup_' + today(), c = await h.challenge();
+    const huge = await h.call('/v1/backup/start', { deviceId: h.deviceId, challenge: c, name, kind: 'Full', files: [], fileCount: MANIFEST_TOTAL_LIMIT + 1, bytes: 0, signature: 'x' }); assert.equal(huge.body.code, 'too_many_files');
+    const c2 = await h.challenge();
+    const both = await h.call('/v1/backup/start', { deviceId: h.deviceId, challenge: c2, name, kind: 'Full', files: [{ path: 'a', bytes: 1 }], fileCount: 1, bytes: 1, signature: 'x' }); assert.equal(both.body.code, 'invalid_request');
+    const s = await pagedStart(h, name, 1, 2);
+    assert.equal((await page(h, s, 0, [{ path: 'a', bytes: 1 }, { path: 'b', bytes: 1 }])).body.code, 'too_many_files');
+  } finally { await h.close(); }
+});
+
+test('paged manifest: byte sum must equal signed bytes', async () => {
+  const h = await harness();
+  try {
+    h.select(); await h.pair();
+    const s = await pagedStart(h, 'Full_Bckup_' + today(), 2, 10);
+    assert.equal((await page(h, s, 0, [{ path: 'a', bytes: 11 }])).body.code, 'invalid_request');
+    assert.equal((await page(h, s, 0, [{ path: 'a', bytes: 4 }])).status, 200);
+    assert.equal((await page(h, s, 1, [{ path: 'b', bytes: 5 }])).body.code, 'invalid_request');
+    assert.equal((await sendChunk(h, s, 0, 'abcd')).status, 400);
   } finally { await h.close(); }
 });
 

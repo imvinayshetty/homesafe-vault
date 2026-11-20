@@ -5,7 +5,9 @@ import { z } from 'zod';
 
 export const segment = z.string().min(1).max(80).refine(s => s === s.trim() && !/[\\/<>:"|?*\x00-\x1f]/.test(s) && !/[. ]$/.test(s) && !/^(\.|\.\.|con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(s), 'Invalid folder name');
 export const filePath = z.string().max(1024).refine(s => s.split('/').every(p => segment.safeParse(p).success && !p.startsWith('.homesafe')), 'Invalid file path');
-export const manifestSchema = z.object({ kind: z.enum(['Full', 'Custom']), name: segment.optional(), files: z.array(z.object({ path: filePath, bytes: z.number().int().nonnegative().max(1024 ** 4), sha256: z.string().regex(/^[a-f0-9]{64}$/) })).min(1).max(10000) });
+const manifestFiles = z.array(z.object({ path: filePath, bytes: z.number().int().nonnegative().max(1024 ** 4), sha256: z.string().regex(/^[a-f0-9]{64}$/) })).max(10000);
+export const manifestSchema = z.object({ kind: z.enum(['Full', 'Custom']), name: segment.optional(), files: manifestFiles.min(1) });
+const pagedManifestSchema = manifestSchema.extend({ files: manifestFiles.length(0) });
 export function dateCode(d = new Date()) { return [d.getDate(), d.getMonth() + 1, d.getFullYear() % 100].map(v => String(v).padStart(2, '0')).join(''); }
 export async function directory(parent, name, create = false) {
   segment.parse(name);
@@ -44,7 +46,7 @@ export async function enrollIdentity(root, key, identity) {
   await fs.writeFile(path.join(folder, '.homesafe-daemon-identity.json'), JSON.stringify(seal(key, identity)), { flag: 'wx', mode: 0o600 });
 }
 export async function createTransfer(root, key, identity, input, now = new Date()) {
-  const manifest = manifestSchema.parse(input), date = dateCode(now), base = `${manifest.kind}_Bckup_${date}`, name = manifest.name ?? base;
+  const manifest = (input.paged ? pagedManifestSchema : manifestSchema).parse(input), date = dateCode(now), base = `${manifest.kind}_Bckup_${date}`, name = manifest.name ?? base;
   if (name !== base && !name.startsWith(`${base}_`)) throw new Error(`Keep ${base} at the start of the backup name`);
   const unique = new Set(manifest.files.map(f => f.path.toLowerCase()));
   if (unique.size !== manifest.files.length) throw new Error('Duplicate file paths');

@@ -46,7 +46,7 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
  };
  const authorizedTransfer = v => { if (!transfer || transfer.failed || transfer.id !== v.transferId || transfer.token !== v.token) throw vaultError('invalid_request'); device(transfer.deviceId); return transfer; };
  return {
-  ownsRequest(route,v,req) { return Boolean(transfer && !transfer.failed && !transfer.finished && (route === '/v1/backup/chunk' ? transfer.files.length === transfer.totalFiles && req.headers['x-transfer-id'] === transfer.id && req.headers['x-transfer-token'] === transfer.token : route === '/v1/backup/finish' && v.transferId === transfer.id && v.token === transfer.token)); },
+  ownsRequest(route,v,req) { return Boolean(transfer && !transfer.failed && !transfer.finished && (route === '/v1/backup/chunk' ? req.headers['x-transfer-id'] === transfer.id && req.headers['x-transfer-token'] === transfer.token : route === '/v1/backup/finish' && v.transferId === transfer.id && v.token === transfer.token)); },
   active: () => Boolean(transfer && !transfer.failed && !transfer.finished),
   activeIdentity: () => transfer && !transfer.failed && !transfer.finished ? transfer.identity : null,
   reset() { if (transfer && !transfer.failed && !transfer.finished) throw vaultError('transfer_active'); transfer = null; pending.clear(); challenges.clear(); },
@@ -78,22 +78,27 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     return { backups };
    }
    if (route === '/v1/backup/start') {
+    // Two modes: inline manifest (files non-empty, no fileCount) or paged (files: [] with fileCount + bytes).
     if (!Array.isArray(v.files) || v.files.length > MANIFEST_PAGE_LIMIT) throw vaultError('too_many_files');
-    const page = z.array(entrySchema).min(1).parse(v.files), pageBytes = page.reduce((n, f) => n + f.bytes, 0);
-    const totalFiles = v.totalFiles ?? page.length, totalBytes = v.totalBytes ?? pageBytes;
-    if (!Number.isInteger(totalFiles) || totalFiles > MANIFEST_TOTAL_LIMIT) throw vaultError('too_many_files');
-    if (totalFiles < page.length || !Number.isSafeInteger(totalBytes) || totalBytes < pageBytes || (totalFiles === page.length && totalBytes !== pageBytes)) throw vaultError('invalid_request');
+    const paged = v.files.length === 0;
+    if (!paged && v.fileCount !== undefined) throw vaultError('invalid_request');
+    if (paged && (!Number.isInteger(v.fileCount) || v.fileCount < 1)) throw vaultError('invalid_request');
+    if (paged && v.fileCount > MANIFEST_TOTAL_LIMIT) throw vaultError('too_many_files');
+    const page = paged ? [] : z.array(entrySchema).min(1).parse(v.files), pageBytes = page.reduce((n, f) => n + f.bytes, 0);
+    const totalFiles = paged ? v.fileCount : page.length, totalBytes = paged ? v.bytes : (v.bytes ?? pageBytes);
+    if (!Number.isSafeInteger(totalBytes) || totalBytes < 0 || (!paged && totalBytes !== pageBytes)) throw vaultError('invalid_request');
     const r = proof(v, 'backup', { name: v.name, kind: v.kind, files: totalFiles, bytes: totalBytes });
     if (transfer && !transfer.failed && !transfer.finished) throw vaultError('transfer_active'); await assertRoot();
-    const t = await createTransfer(root, key, identity(r), { kind: v.kind, name: v.name, declaredBytes: totalBytes, files: page.map(f => ({ ...f, sha256: '0'.repeat(64) })) });
+    const t = await createTransfer(root, key, identity(r), { kind: v.kind, name: v.name, declaredBytes: totalBytes, paged, files: page.map(f => ({ ...f, sha256: '0'.repeat(64) })) });
     transfer = { ...t, id: random(), token: random(), deviceId: r.deviceId, identity: identity(r), totalFiles, totalBytes, seen: new Set(t.files.map(f => f.path.toLowerCase())), offsets: new Map(), hashes: new Map(), failed: false, lastActivity: Date.now() };
     emit({ type: 'phone_connecting' }); emit({ type: 'pairing_verified', profile: r.profile, phone: r.phone }); emit({ type: 'transfer_started' }); emit({ type: 'transfer_progress', files: 0, total: totalFiles }); await audit('transfer_started');
-    return { transferId: transfer.id, token: transfer.token, manifestComplete: t.files.length === totalFiles };
+    return { transferId: transfer.id, token: transfer.token, manifestComplete: !paged };
    }
    if (route === '/v1/backup/files') {
-    // Manifest paging: further pages are accepted only before the first chunk.
+    // Manifest pages: { transferId, token, offset, files }. offset must equal entries received so far; only before the first chunk.
     const t = authorizedTransfer(v);
     if (t.offsets.size || t.completed.size || t.files.length >= t.totalFiles) throw vaultError('invalid_request');
+    if (!Number.isInteger(v.offset) || v.offset !== t.files.length) throw vaultError('invalid_request');
     if (!Array.isArray(v.files) || v.files.length > MANIFEST_PAGE_LIMIT || t.files.length + v.files.length > t.totalFiles) throw vaultError('too_many_files');
     const page = z.array(entrySchema).min(1).parse(v.files), keys = page.map(f => f.path.toLowerCase());
     if (new Set(keys).size !== keys.length || keys.some(k => t.seen.has(k))) throw vaultError('invalid_request');
@@ -105,7 +110,7 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
    }
    if (route === '/v1/backup/chunk') {
     const h = req.headers, t = authorizedTransfer({ transferId: h['x-transfer-id'], token: h['x-transfer-token'] }), index = Number(h['x-file-index']), offset = Number(h['x-offset']), entry = t.files[index];
-    if (t.files.length !== t.totalFiles) throw vaultError('invalid_request');
+    if (t.files.length !== t.totalFiles || t.bytes !== t.totalBytes) throw vaultError('too_many_files');
     if (!Number.isInteger(index) || !Number.isInteger(offset) || !entry || t.completed.has(index) || offset !== (t.offsets.get(index) ?? 0)) throw new Error('Invalid offset');
     let bytes = 0, chunks = []; for await (const c of req) { bytes += c.length; if (bytes > 4194304 || offset + bytes > entry.bytes) throw new Error('Chunk too large'); chunks.push(c); }
     const data = Buffer.concat(chunks); if (createHash('sha256').update(data).digest('hex') !== h['x-sha256']) throw new Error('Chunk digest mismatch');
