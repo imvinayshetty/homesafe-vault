@@ -1,0 +1,14 @@
+# Copy to ~/.config/systemd/user/ then: systemctl --user enable --now homesafe-vault
+# For start before login on a Pi: loginctl enable-linger $USER
+[Unit]
+Description=HomeSafe Vault local backup service
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/node /opt/homesafe-vault/src/cli.mjs start
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

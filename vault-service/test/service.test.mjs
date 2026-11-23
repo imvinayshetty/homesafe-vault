@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { randomBytes, generateKeyPairSync, sign, createHash } from 'node:crypto';
+import { randomBytes, createHash } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { WebSocket } from 'ws';
-import { createVaultService, pairingMessage, validCode, CODE_LIFETIME_MS } from '../src/service.mjs';
+import { validCode, CODE_LIFETIME_MS } from '../src/service.mjs';
+import { harness } from './helpers.mjs';
 import { manifestSchema, enrollIdentity, createTransfer, receiveFile, finishTransfer, verifyIdentity } from '../src/storage.mjs';
 const fixtures = async () => { const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'vault-test-')); const root = path.join(temp, 'HomeSafeBckup'); await fs.mkdir(root); return { temp, root, key: randomBytes(32), identity: { profile: 'Owner', phone: 'Pixel', publicKey: 'device-key' } }; };
 test('six-digit pairing code expires exactly at 30 seconds', () => { assert.equal(CODE_LIFETIME_MS, 30000); assert.equal(validCode({ code: '123456', expiresAt: 30000 }, '123456', 29999), true); assert.equal(validCode({ code: '123456', expiresAt: 30000 }, '123456', 30000), false); assert.equal(validCode({ code: '123456', expiresAt: 30000 }, '654321', 29999), false); });
@@ -16,30 +17,17 @@ test('Full/Custom names and same-date renaming never overwrite existing backups'
 test('case-insensitive duplicate file paths rejected', async () => { const f = await fixtures(); try { await enrollIdentity(f.root, f.key, f.identity); await assert.rejects(createTransfer(f.root, f.key, f.identity, { kind: 'Full', files: ['A.txt', 'a.txt'].map(p => ({ path: p, bytes: 0, sha256: 'a'.repeat(64) })) }), /Duplicate/); } finally { await fs.rm(f.temp, { recursive: true }); } });
 test('incomplete and corrupt files cannot mark backup complete', async () => { const f = await fixtures(); try { await enrollIdentity(f.root, f.key, f.identity); const t = await createTransfer(f.root, f.key, f.identity, { kind: 'Full', files: [{ path: 'data', bytes: 3, sha256: createHash('sha256').update('yes').digest('hex') }] }); await assert.rejects(finishTransfer(f.root, f.key, f.identity, t), /Not all/); await assert.rejects(receiveFile(f.root, f.key, f.identity, t, 0, Readable.from([Buffer.from('bad')])), /SHA-256/); assert.equal(JSON.parse(await fs.readFile(path.join(t.destination, '.homesafe-backup.json'))).complete, false); } finally { await fs.rm(f.temp, { recursive: true }); } });
 test('symlinked destination cannot write outside authorized root', async () => { const f = await fixtures(); try { await enrollIdentity(f.root, f.key, f.identity); const folder = path.join(f.root, 'Owner', 'Pixel'); await fs.rename(folder, folder + '-old'); await fs.symlink(f.temp, folder); await assert.rejects(verifyIdentity(f.root, f.key, f.identity), /real directory/); } finally { await fs.rm(f.temp, { recursive: true }); } });
-test('real socket pairing and disk upload emit ordered progress; unauthorized monitor and revocation enforced', async () => {
-  const f = await fixtures(), adminToken = randomBytes(32).toString('base64url');
-  const service = await createVaultService({ root: f.root, stateDir: f.temp, identityKey: f.key.toString('base64'), adminToken, origins: ['http://localhost:8080'], testOnly: true, monitorPort: 0, lanPort: 0 });
-  const ws = new WebSocket(`ws://127.0.0.1:${service.monitorPort}/v1/transfer-events`, { origin: 'http://localhost:8080' }); const events = []; ws.on('message', raw => events.push(JSON.parse(raw.toString())));
-  const wait = async predicate => { for (let i = 0; i < 200; i++) { const found = events.find(predicate); if (found) return found; await new Promise(r => setTimeout(r, 10)); } throw new Error('Event timeout'); };
-  const base = `http://127.0.0.1:${service.lanPort}`;
+test('unauthorized monitors and a second dashboard are rejected', async () => {
+  const h = await harness();
   try {
-    await new Promise(r => ws.once('open', r)); ws.send(JSON.stringify({ type: 'authenticate', token: adminToken })); await wait(e => e.type === 'service_ready'); ws.send(JSON.stringify({ type: 'select_destination', profile: 'Owner', phone: 'Pixel' })); const code = await wait(e => e.type === 'pairing_code'); assert.match(code.code, /^\d{6}$/);
-    const { privateKey, publicKey } = generateKeyPairSync('ed25519'); const challenge = await (await fetch(`${base}/v1/challenge`, { method: 'POST' })).json(); const pair = { profile: 'Owner', phone: 'Pixel', code: code.code, challenge: challenge.challenge, publicKey: publicKey.export({ format: 'der', type: 'spki' }).toString('base64') }; pair.signature = sign(null, Buffer.from(pairingMessage(pair)), privateKey).toString('base64');
-    const paired = await fetch(`${base}/v1/pair`, { method: 'POST', body: JSON.stringify(pair) }); assert.equal(paired.status, 200); const session = await paired.json(); assert.equal((await fetch(`${base}/v1/pair`, { method: 'POST', body: JSON.stringify(pair) })).status, 401);
-    const bytes = Buffer.from('real phone payload'), headers = { Authorization: `Bearer ${session.token}` }; const start = await fetch(`${base}/v1/backups`, { method: 'POST', headers, body: JSON.stringify({ kind: 'Full', files: [{ path: 'photos/example.jpg', bytes: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') }] }) }); assert.equal(start.status, 201); const t = await start.json();
-    assert.equal((await fetch(`${base}/v1/backups/${t.id}/files/0`, { method: 'PUT', headers, body: bytes })).status, 200); assert.equal((await fetch(`${base}/v1/backups/${t.id}/complete`, { method: 'POST', headers })).status, 200); await wait(e => e.type === 'transfer_completed');
-    assert.deepEqual(events.filter(e => ['phone_connecting', 'pairing_verified', 'transfer_started', 'transfer_progress', 'transfer_completed'].includes(e.type)).map(e => e.type), ['phone_connecting', 'pairing_verified', 'transfer_started', 'transfer_progress', 'transfer_progress', 'transfer_completed']);
-    assert.equal((await fs.readFile(path.join(f.root, 'Owner', 'Pixel', t.name, 'photos/example.jpg'))).toString(), bytes.toString()); assert.equal(JSON.parse(await fs.readFile(path.join(f.root, 'Owner', 'Pixel', t.name, '.homesafe-backup.json'))).complete, true);
-    const log = await fs.readFile(path.join(f.temp, 'events.jsonl'), 'utf8'); assert.equal(log.includes('Owner'), false); assert.equal(log.includes(session.token), false);
-    ws.send(JSON.stringify({ type: 'revoke_phone', profile: 'Owner', phone: 'Pixel' })); await wait(e => e.type === 'phone_revoked'); assert.equal(JSON.parse(await fs.readFile(path.join(f.temp, 'phones.json')))[0].revoked, true);
-    const other = new WebSocket(`ws://127.0.0.1:${service.monitorPort}/v1/transfer-events`, { origin: 'http://localhost:8080' }); const otherEvents = [];
+    h.select(); await h.wait(e => e.type === 'pairing_code');
+    const other = new WebSocket(`ws://127.0.0.1:${h.s.monitorPort}/v1/transfer-events`, { origin: 'http://localhost:8080' }), otherEvents = [];
     other.on('message', raw => otherEvents.push(JSON.parse(raw.toString())));
-    await new Promise(r => other.once('open', r)); other.send(JSON.stringify({ type: 'authenticate', token: adminToken }));
+    await new Promise(r => other.once('open', r)); other.send(JSON.stringify({ type: 'authenticate', token: h.admin }));
     for (let i = 0; i < 100 && !otherEvents.some(e => e.type === 'service_ready'); i++) await new Promise(r => setTimeout(r, 10));
-    assert.deepEqual(otherEvents.map(e => e.type), ['service_ready']);
     other.send(JSON.stringify({ type: 'select_destination', profile: 'Other Owner', phone: 'Other Phone' }));
     for (let i = 0; i < 100 && !otherEvents.some(e => e.type === 'service_error'); i++) await new Promise(r => setTimeout(r, 10));
-    assert.equal(otherEvents.some(e => e.type === 'service_error'), true); assert.equal(otherEvents.some(e => e.type === 'pairing_code' || e.type === 'pairing_verified'), false); other.terminate();
-    const denied = new WebSocket(`ws://127.0.0.1:${service.monitorPort}/v1/transfer-events`, { origin: 'http://localhost:8080' }); await new Promise(r => denied.once('open', r)); denied.send(JSON.stringify({ type: 'authenticate', token: 'wrong' })); assert.equal(await new Promise(r => denied.once('close', r)), 1008);
-  } finally { ws.terminate(); await service.close(); await fs.rm(f.temp, { recursive: true }); }
+    assert.equal(otherEvents.some(e => e.type === 'service_error'), true); assert.equal(otherEvents.some(e => e.type === 'pairing_code'), false); other.terminate();
+    const denied = new WebSocket(`ws://127.0.0.1:${h.s.monitorPort}/v1/transfer-events`, { origin: 'http://localhost:8080' }); await new Promise(r => denied.once('open', r)); denied.send(JSON.stringify({ type: 'authenticate', token: 'wrong' })); assert.equal(await new Promise(r => denied.once('close', r)), 1008);
+  } finally { await h.close(); }
 });

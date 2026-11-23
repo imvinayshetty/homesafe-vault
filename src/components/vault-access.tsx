@@ -15,7 +15,7 @@ type Stage =
 const inputClass = "mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3 outline-none focus:ring-2 focus:ring-ring disabled:opacity-60";
 
 /** Cloud handles sign-in only; every backup file stays on local storage. */
-export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolean) => void }) {
+export function VaultAccess({ onAuthChange, greeting }: { onAuthChange?: (signedIn: boolean, email: string) => void; greeting?: string }) {
   const [enrollStep, setEnrollStep] = useState<"scan" | "pin">("scan");
   const [mode, setMode] = useState<"login" | "register">("login");
   const [stage, setStage] = useState<Stage>({ kind: "form" });
@@ -44,7 +44,7 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     return () => { active = false; sub.subscription.unsubscribe(); };
   }, []);
 
-  useEffect(() => { onAuthChange?.(stage.kind === "signed-in"); }, [stage.kind, onAuthChange]);
+  useEffect(() => { onAuthChange?.(stage.kind === "signed-in", stage.kind === "signed-in" ? stage.email.trim().toLowerCase() : ""); }, [stage, onAuthChange]);
 
   /** Decide the next step after password auth: enroll Authy, challenge, or done. */
   async function nextStep(): Promise<Stage> {
@@ -80,7 +80,7 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     window.__lovableEvents?.track?.("project.account_flow_started", { flow: "registration" });
     const { error: signUpError } = await supabase.auth.signUp({
       email: email.trim(), password,
-      options: { emailRedirectTo: window.location.origin },
+      options: window.location.protocol === "app:" ? {} : { emailRedirectTo: window.location.origin },
     });
     if (signUpError) throw signUpError;
     window.__lovableEvents?.track?.("project.account_step_completed", { flow: "registration", step: "account_submission" });
@@ -146,8 +146,8 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     setCopied(true); setTimeout(() => setCopied(false), 2000);
   };
 
-  if (stage.kind === "signed-in") return <section className="flex flex-wrap items-center justify-between gap-4 border-b border-border py-4">
-    <p className="flex min-w-0 flex-wrap items-center gap-2 text-sm"><ShieldCheck className="h-4 w-4 shrink-0 text-primary" /><span className="break-all">{stage.email}</span><span className="text-muted-foreground">Authy verified</span></p>
+  if (stage.kind === "signed-in") return <section className="flex shrink-0 flex-wrap items-center justify-between gap-4 border-b border-border py-2">
+    <p className="flex min-w-0 flex-wrap items-center gap-2 text-sm">{greeting ? <span className="truncate font-display text-2xl">Hi {greeting}</span> : <span className="break-all">{stage.email}</span>}<span className="flex items-center gap-1 text-muted-foreground"><ShieldCheck className="h-4 w-4 shrink-0 text-primary" />Authy verified</span></p>
     <Button variant="ghost" disabled={busy} onClick={() => void signOut()}><LogOut />Sign out</Button>
     {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
   </section>;
@@ -160,7 +160,7 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
         <Button role="tab" aria-selected={mode === "login"} disabled={busy} variant={mode === "login" ? "secondary" : "ghost"} className="h-auto min-h-12 whitespace-normal" onClick={() => { setMode("login"); setError(""); setPassword(""); }}>Returning user</Button>
         <Button role="tab" aria-selected={mode === "register"} disabled={busy} variant={mode === "register" ? "secondary" : "ghost"} className="h-auto min-h-12 whitespace-normal" onClick={() => { setMode("register"); setError(""); setPassword(""); }}>First-time registration</Button>
       </div>
-      <form className="space-y-6" onSubmit={e => { e.preventDefault(); if (!busy && email.trim() && password.length >= 6) void (mode === "login" ? login() : register()); }}>
+      <form className="space-y-4" onSubmit={e => { e.preventDefault(); if (!busy && email.trim() && password.length >= 6) void (mode === "login" ? login() : register()); }}>
         <label className="block text-sm">Email address<input required type="email" disabled={busy} value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" placeholder="you@example.com" className={inputClass} /></label>
         <label className="block text-sm">Password<input required minLength={6} disabled={busy} type="password" value={password} onChange={e => setPassword(e.target.value)} autoComplete={mode === "login" ? "current-password" : "new-password"} className={inputClass} /></label>
         <Button type="submit" className="min-h-12 w-full" disabled={busy || !email.trim() || password.length < 6}>{busy ? <Loader2 className="animate-spin" /> : <ArrowRight />}{mode === "login" ? "Continue to Authy" : "Create account"}</Button>
@@ -182,7 +182,7 @@ export function VaultAccess({ onAuthChange }: { onAuthChange?: (signedIn: boolea
     </> : stage.kind === "enroll" || stage.kind === "challenge" ? <>
       <Smartphone className="h-10 w-10 text-primary" />
       <p className="text-sm text-muted-foreground">Enter the current six-digit code for your Vault account in Authy.</p>
-      <form className="space-y-6" onSubmit={e => { e.preventDefault(); if (!busy && token.length === 6) void verifyToken(stage.factorId, stage); }}>
+      <form className="space-y-4" onSubmit={e => { e.preventDefault(); if (!busy && token.length === 6) void verifyToken(stage.factorId, stage); }}>
         <label className="block text-sm">Authy code<input disabled={busy} required pattern="[0-9]{6}" value={token} onChange={e => setToken(e.target.value.replace(/\D/g, "").slice(0, 6))} inputMode="numeric" autoComplete="one-time-code" placeholder="000000" className={`${inputClass} text-center font-mono text-2xl`} /></label>
         <Button type="submit" className="min-h-12 w-full" disabled={busy || token.length !== 6}>{busy ? <Loader2 className="animate-spin" /> : <ShieldCheck />}{stage.kind === "enroll" ? "Verify & finish setup" : "Verify & open Vault"}</Button>
       </form>

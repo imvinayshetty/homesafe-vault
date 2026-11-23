@@ -1,14 +1,17 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
-import { LocalVaultConnection } from "@/components/local-vault-connection";
+import { LocalVaultConnection, profileKey } from "@/components/local-vault-connection";
 vi.mock("@/components/transfer-status", () => ({ TransferStatus: () => null }));
-afterEach(cleanup);
-it("cannot open monitoring before selecting a destination and providing a valid service key", () => {
-  const ready = vi.fn();
-  render(<LocalVaultConnection onReady={ready} />);
-  expect(ready).not.toHaveBeenCalled();
-  fireEvent.change(screen.getByLabelText("HomeSafe account email"), { target: { value: "owner@example.test" } });
+afterEach(() => { cleanup(); localStorage.clear(); });
+it("first time: asks profile, then phone on a new screen, never the email, and needs a valid key", () => {
+  const ready = vi.fn(), profile = vi.fn();
+  render(<LocalVaultConnection email="owner@example.test" onReady={ready} onProfile={profile} />);
+  expect(screen.queryByLabelText(/email/i)).toBeNull();
+  expect(screen.queryByLabelText("Phone name")).toBeNull();
   fireEvent.change(screen.getByLabelText("Profile name"), { target: { value: "Owner" } });
+  fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  expect(profile).toHaveBeenLastCalledWith("Owner");
+  expect(screen.queryByLabelText("Profile name")).toBeNull();
   fireEvent.change(screen.getByLabelText("Phone name"), { target: { value: "Pixel" } });
   fireEvent.click(screen.getByRole("button", { name: "Continue" }));
   fireEvent.change(screen.getByLabelText("Local service access key"), { target: { value: "invalid" } });
@@ -17,4 +20,14 @@ it("cannot open monitoring before selecting a destination and providing a valid 
   fireEvent.change(screen.getByLabelText("Local service access key"), { target: { value: "a".repeat(43) } });
   fireEvent.click(screen.getByRole("button", { name: "Open monitoring" }));
   expect(ready).toHaveBeenCalledWith(true);
+  expect(localStorage.getItem(profileKey("owner@example.test"))).toBe("Owner");
+});
+it("linking another phone skips the profile step", () => {
+  localStorage.setItem(profileKey("owner@example.test"), "Owner");
+  const profile = vi.fn();
+  render(<LocalVaultConnection email="owner@example.test" onProfile={profile} />);
+  expect(screen.queryByLabelText("Profile name")).toBeNull();
+  expect(screen.getByLabelText("Phone name")).toBeTruthy();
+  expect(screen.getByText(/Step 1 of 2/)).toBeTruthy();
+  expect(profile).toHaveBeenCalledWith("Owner");
 });

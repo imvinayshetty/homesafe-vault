@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Loader2, Smartphone, Wifi } from "lucide-react";
-import { DAEMON_URL, PAIRING_CODE_LIFETIME_MS, applyDaemonEvent, parseDaemonEvent, type PairingCode, type TransferState } from "@/lib/vault-daemon";
+import { DAEMON_URL, MINTED_PAIRING_CODE_LIFETIME_MS, applyDaemonEvent, parseDaemonEvent, type PairingCode, type TransferState } from "@/lib/vault-daemon";
 import { VaultPairingCode } from "@/components/vault-pairing-code";
+import { Button } from "@/components/ui/button";
+import { TransferHistory } from "@/components/transfer-history";
+import { parseTransferHistory, type TransferRecord } from "@/lib/transfer-history";
 
 export function transferSteps(profile: string, phone: string): string[] {
   return ["Awaiting connection", "Establishing connection", `Code success verified for ${profile} ${phone}`, "Initiating Transfer", "Transfer in progress", "Backup Completed"];
@@ -16,27 +19,31 @@ export function TransferStatus({ profile, phone, email = "", accessKey = "" }: {
   const stateRef = useRef(state);
   const socketRef = useRef<WebSocket | null>(null);
   const [serviceError, setServiceError] = useState("");
+  const [backups, setBackups] = useState<TransferRecord[] | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
   useEffect(() => {
     setPairing(null);
+    setBackups(null); setShowHistory(false);
     stateRef.current = { stage: 0 }; setState({ stage: 0 }); setServiceError("");
     let ws: WebSocket | null = null; let retry: ReturnType<typeof setTimeout>; let stopped = false;
     const open = () => {
       try { ws = new WebSocket(DAEMON_URL); } catch { setService("offline"); return; }
       socketRef.current = ws;
       ws.onopen = () => { ws?.send(JSON.stringify({ type: "authenticate", token: accessKey })); };
-      ws.onclose = (event) => { setService("offline"); setPairing(null); if (event.code === 1008) setServiceError("Local access key was rejected. Disconnect and enter the key from your Vault service."); if (!stopped && event.code !== 1008) retry = setTimeout(open, 10000); };
+      ws.onclose = (event) => { setService("offline"); setPairing(null); if (event.code === 1008) setServiceError("Local access key was rejected. Disconnect and enter the key from your Vault service."); if (!stopped && event.code !== 1008) { (window as unknown as { vaultDesktop?: { ensureRunning?: () => Promise<unknown> } }).vaultDesktop?.ensureRunning?.().catch(() => {}); retry = setTimeout(open, 4000); } };
       ws.onmessage = (m) => {
         try {
           const message = JSON.parse(String(m.data));
           if (message.type === "service_ready") { setService("online"); ws?.send(JSON.stringify({ type: "select_destination", profile, phone, email })); return; }
           if (message.type === "service_error") { setServiceError(String(message.reason)); return; }
+          if (message.type === "transfer_history") { const rows = parseTransferHistory(message); if (rows) setBackups(rows.filter(r => r.profile === profile && r.phone === phone)); return; }
         } catch { return; }
         const e = parseDaemonEvent(m.data); if (!e) return;
         if (e.type === "pairing_code") {
-          setPairing({ code: e.code, expiresAt: Math.min(e.expiresAt, Date.now() + PAIRING_CODE_LIFETIME_MS) });
+          { const { type: _t, ...code } = e; setPairing({ ...code, expiresAt: Math.min(e.expiresAt, Date.now() + MINTED_PAIRING_CODE_LIFETIME_MS) }); }
           return;
         }
-        if (e.type === "phone_connecting") { setPairing(null); if (stateRef.current.stage > 1) return; }
+        if (e.type === "phone_connecting") { setPairing(null); if (stateRef.current.stage > 1) return; setShowHistory(false); }
         const prev = stateRef.current; const next = applyDaemonEvent(prev, e, profile, phone);
         if (next === prev) return;
         stateRef.current = next; setState(next);
@@ -46,17 +53,20 @@ export function TransferStatus({ profile, phone, email = "", accessKey = "" }: {
     open();
     return () => { stopped = true; clearTimeout(retry); ws?.close(); };
   }, [profile, phone, email, accessKey]);
-  if (state.stage === 0 && !state.failed) return <><AwaitingCard service={service} profile={profile} phone={phone} pairing={pairing} />{serviceError && <p role="alert" className="text-sm text-destructive">{serviceError}</p>}</>;
-  return <TransferScreen state={state} profile={profile} phone={phone} service={service} onClose={state.failed || state.stage === 5 ? () => { socketRef.current?.send(JSON.stringify({ type: "reset" })); stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
+  const historyPanel = <TransferHistory backups={backups} online={service === "online"} onVerify={id => { setServiceError(""); socketRef.current?.send(JSON.stringify({ type: "verify_backup", id })); }} />;
+  const errors = serviceError && <p role="alert" className="text-sm text-destructive">{serviceError}</p>;
+  if (state.stage === 0 && !state.failed) return <><AwaitingCard service={service} profile={profile} phone={phone} pairing={pairing} onMint={service === "online" ? () => socketRef.current?.send(JSON.stringify({ type: "mint_pairing" })) : undefined} />{errors}{historyPanel}</>;
+  if (showHistory) return <><div className="flex flex-wrap items-center justify-between gap-2"><p role="status" className={`text-sm ${state.failed ? "text-destructive" : "text-primary"}`}>{state.failed ? state.failed : state.verifying ? "Checking backup integrity" : transferSteps(profile, phone)[state.stage]}</p><Button variant="outline" onClick={() => setShowHistory(false)}>Open transfer</Button></div>{errors}{historyPanel}</>;
+  return <TransferScreen state={state} profile={profile} phone={phone} service={service} onViewHistory={() => setShowHistory(true)} onClose={state.failed || state.stage === 5 ? () => { socketRef.current?.send(JSON.stringify({ type: "reset" })); stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
 }
 
 type Service = "checking" | "online" | "offline";
 const serviceLabel = (s: Service) => s === "online" ? "Local Vault service connected" : s === "checking" ? "Looking for local Vault service…" : "Local Vault service not running";
 
 /** Compact dashboard section shown while waiting for the phone. */
-export function AwaitingCard({ service, profile, phone, sample, action, pairing }: { service: Service; profile: string; phone: string; sample?: boolean; action?: ReactNode; pairing?: PairingCode | null }) {
+export function AwaitingCard({ service, profile, phone, sample, action, pairing, onMint }: { service: Service; profile: string; phone: string; sample?: boolean; action?: ReactNode; pairing?: PairingCode | null; onMint?: (() => void) | undefined }) {
   return (
-    <section className="flex flex-col items-center gap-5 rounded-2xl border border-border bg-card/60 p-6 text-center lg:flex-row lg:text-left">
+    <section className="flex flex-col items-center gap-4 rounded-2xl border border-border bg-card/60 p-4 text-center sm:p-5 lg:flex-row lg:text-left">
       <div className="relative grid h-24 w-24 shrink-0 place-items-center">
         {[0, 1, 2].map(k => <span key={k} className="tx-ripple absolute inset-2 rounded-full border-2 border-primary" style={{ animationDelay: `${k * 0.8}s` }} />)}
         <span className="grid h-16 w-16 place-items-center rounded-full bg-accent"><Smartphone className="tx-float h-8 w-8 text-primary" /></span>
@@ -64,23 +74,24 @@ export function AwaitingCard({ service, profile, phone, sample, action, pairing 
       <div className="flex-1 space-y-1">
         <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">{sample ? "Sample · " : ""}{profile} · {phone}</p>
         <h3 className="font-display text-2xl">Awaiting connection<span className="inline-block animate-pulse">…</span></h3>
-        <p className="text-sm text-muted-foreground">Open the HomeSafe app on your phone and enter the Vault code. The transfer screen opens as soon as your phone connects.</p>
+        <p className="text-sm text-muted-foreground">Open the HomeSafe app on your phone and scan the QR code, or enter the Vault code. The transfer screen opens as soon as your phone connects.</p>
         <p className={`flex items-center justify-center gap-2 text-xs sm:justify-start ${service === "online" ? "text-primary" : "text-muted-foreground"}`}><span className={`h-2 w-2 rounded-full ${service === "online" ? "bg-primary pulse-dot" : "bg-muted-foreground"}`} />{serviceLabel(service)}</p>
       </div>
-      <VaultPairingCode sample={sample ?? false} pairing={pairing ?? null} />
+      <VaultPairingCode sample={sample ?? false} pairing={pairing ?? null} onMint={onMint} />
       {action}
     </section>
   );
 }
 
 /** Full-screen payment-style transfer animation, from Establishing connection onwards. */
-export function TransferScreen({ state, profile, phone, service, onClose, sample }: { state: TransferState; profile: string; phone: string; service: Service; onClose?: (() => void) | undefined; sample?: boolean }) {
+export function TransferScreen({ state, profile, phone, service, onClose, onViewHistory, sample }: { state: TransferState; profile: string; phone: string; service: Service; onClose?: (() => void) | undefined; onViewHistory?: () => void; sample?: boolean }) {
   const { stage, failed, progress } = state;
   const steps = transferSteps(profile, phone);
   const pct = Math.round((progress ?? 0) * 100);
   const done = stage === 5 && !failed;
   const verifiedOnly = stage === 2 && !failed;
   const subtitle = failed ? `Backup stopped: ${failed}`
+    : state.verifying ? `Verifying SHA-256 and sizes · ${state.verifying.checkedFiles.toLocaleString()} / ${state.verifying.total.toLocaleString()} files checked`
     : stage === 0 ? "Open the HomeSafe app on your phone and enter the Vault code"
     : stage === 1 ? "Securing a private link over your home Wi-Fi"
     : stage === 2 ? "Phone identity confirmed · choose Full or Custom backup on your phone"
@@ -115,13 +126,13 @@ export function TransferScreen({ state, profile, phone, service, onClose, sample
         </div>
       </div>
       <div className="space-y-2">
-        <h4 key={stage} className={`tx-fade font-display text-2xl sm:text-3xl ${failed ? "text-destructive" : "text-foreground"}`}>{failed ? "Backup could not finish" : steps[stage]}{!failed && stage === 0 && <span className="inline-block animate-pulse">…</span>}</h4>
+        <h4 key={stage} className={`tx-fade font-display text-2xl sm:text-3xl ${failed ? "text-destructive" : "text-foreground"}`}>{failed ? "Backup could not finish" : state.verifying ? "Checking backup integrity" : steps[stage]}{!failed && stage === 0 && <span className="inline-block animate-pulse">…</span>}</h4>
         <p className={`text-sm ${failed ? "text-destructive" : "text-muted-foreground"}`} role={failed ? "alert" : undefined}>{subtitle}</p>
       </div>
       <ol className="flex w-full max-w-md items-center gap-1.5" aria-label={`Step ${stage + 1} of 6`}>
         {steps.map((label, i) => <li key={i} title={label} className={`h-1.5 flex-1 rounded-full transition-colors duration-500 ${failed && i === stage ? "bg-destructive" : i < stage || (i === stage && (i === 2 || i === 5)) ? "bg-primary" : i === stage ? "bg-primary/50 animate-pulse" : "bg-muted"}`}><span className="sr-only">{label}</span></li>)}
       </ol>
-      {onClose && <button onClick={onClose} className="min-h-11 rounded-full bg-primary px-8 text-sm font-semibold text-primary-foreground hover:opacity-90">{failed ? "Back to dashboard" : stage === 5 ? "Done" : "Close sample"}</button>}
+      <div className="flex flex-wrap justify-center gap-2">{onClose && <Button onClick={onClose} className="min-h-11 px-8">{failed ? "Back to dashboard" : stage === 5 ? "Done" : "Close sample"}</Button>}{onViewHistory && <Button variant="outline" onClick={onViewHistory}>View transfer history</Button>}</div>
       <p className="text-xs text-muted-foreground">{sample ? "Sample preview · no phone or drive is connected." : "This screen moves only when the local Vault service on this computer reports progress."}</p>
       <div className="flex-1" aria-hidden />
     </div>

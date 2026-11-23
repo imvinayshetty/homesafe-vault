@@ -2,7 +2,7 @@ import { act, cleanup } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { VaultPairingCode } from "@/components/vault-pairing-code";
-import { applyDaemonEvent, parseDaemonEvent, PAIRING_CODE_LIFETIME_MS } from "@/lib/vault-daemon";
+import { applyDaemonEvent, groupFingerprint, parseDaemonEvent, PAIRING_CODE_LIFETIME_MS } from "@/lib/vault-daemon";
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 describe("Vault pairing code lifetime", () => {
@@ -31,5 +31,24 @@ describe("Vault pairing code lifetime", () => {
     const state = { stage: 0 } as const;
     if (!event) throw new Error("Missing event");
     expect(applyDaemonEvent(state, event, "Vinay", "Pixel 8")).toBe(state);
+  });
+});describe("Manual pairing fallback", () => {
+  const fp = "ab".repeat(32);
+  it("shows the https address on port 7443 and the grouped fingerprint", () => {
+    vi.useFakeTimers(); vi.setSystemTime(100_000);
+    const { container } = render(<VaultPairingCode pairing={{ code: "012345", expiresAt: 130_000, host: "192.168.1.108", port: 7443, fingerprint: fp, certExpiresAt: 100_000 + 400 * 86_400_000 }} />);
+    expect(container.textContent).toContain("https://192.168.1.108:7443");
+    expect(container.textContent).toContain(groupFingerprint(fp));
+    expect(groupFingerprint(fp).split(" ")).toHaveLength(16);
+    expect(container.textContent).not.toContain("expires soon");
+  });
+  it("warns when the certificate expires within 60 days", () => {
+    vi.useFakeTimers(); vi.setSystemTime(100_000);
+    const { container } = render(<VaultPairingCode pairing={{ code: "012345", expiresAt: 130_000, host: "192.168.1.108", port: 7443, fingerprint: fp, certExpiresAt: 100_000 + 59 * 86_400_000 }} />);
+    expect(container.textContent).toContain("expires soon");
+  });
+  it("parses host, port and certificate expiry from the service event", () => {
+    expect(parseDaemonEvent({ type: "pairing_code", code: "012345", expiresAt: 1, host: "192.168.1.108", port: 7443, certExpiresAt: 5 })).toEqual({ type: "pairing_code", code: "012345", expiresAt: 1, host: "192.168.1.108", port: 7443, certExpiresAt: 5 });
+    expect(parseDaemonEvent({ type: "pairing_code", code: "012345", expiresAt: 1, host: "<script>", port: 99999 })).toEqual({ type: "pairing_code", code: "012345", expiresAt: 1 });
   });
 });

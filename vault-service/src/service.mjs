@@ -2,29 +2,32 @@ import http from 'node:http';
 import https from 'node:https';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { randomBytes, randomInt, timingSafeEqual, createPublicKey, verify } from 'node:crypto';
+import { randomBytes, randomInt, timingSafeEqual, createHash, X509Certificate } from 'node:crypto';
 import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
-import { segment, enrollIdentity, verifyIdentity, createTransfer, receiveFile, finishTransfer } from './storage.mjs';
-import { createNativeProtocol } from './native-protocol.mjs';
+import { segment } from './storage.mjs';
+import { createNativeProtocol, vaultError, errorCode, ERROR_MESSAGES } from './native-protocol.mjs';
+import { createTransferHistory } from './transfer-history.mjs';
 export const CODE_LIFETIME_MS = 30000;
-const token = () => randomBytes(32).toString('base64url');
+export const MINTED_CODE_LIFETIME_MS = 120000;
+export const DEFAULT_LAN_PORT = 7443;
+/** Phone protocol v1 QR: profile and phone are NOT included; the phone learns them from /v1/pair/begin. */
+export function pairingQr({ host, port, fingerprint, code, email }) { const q = new URLSearchParams({ v: '1', host: host ?? '', port: String(port), fp: fingerprint ?? '', code, email: email ?? '' }); return `homesafe://pair?${q}`; }
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
-const pairSchema = z.object({ profile: segment, phone: segment, code: z.string().regex(/^\d{6}$/), publicKey: z.string().max(200), challenge: z.string().max(100), signature: z.string().max(200) });
-export function pairingMessage(v) { return JSON.stringify(['homesafe-pair-v1', v.challenge, v.code, v.profile, v.phone, v.publicKey]); }
 export function validCode(pairing, code, now = Date.now()) { return Boolean(pairing && now < pairing.expiresAt && equal(pairing.code, code)); }
+const STATUS = { rate_limited: 429, transfer_active: 409, name_exists: 409, drive_unavailable: 503, no_space: 507 };
 export async function createVaultService(config) {
   const root = await fs.realpath(config.root); // Must already exist: never silently recreate a disconnected mount.
   const rootStat = await fs.lstat(root);
   if (config.driveIdentity && (rootStat.dev !== config.driveIdentity.dev || rootStat.ino !== config.driveIdentity.ino)) throw new Error('Configured drive changed; reconnect the original drive');
   if (!rootStat.isDirectory()) throw new Error('Select an existing HomeSafeBckup directory');
-  const assertRoot = async () => { const s = await fs.lstat(root); if (!s.isDirectory() || s.isSymbolicLink() || s.dev !== rootStat.dev || s.ino !== rootStat.ino) throw new Error('Selected drive disconnected or changed'); };
+  const assertRoot = async () => { const s = await fs.lstat(root).catch(() => null); if (!s || !s.isDirectory() || s.isSymbolicLink() || s.dev !== rootStat.dev || s.ino !== rootStat.ino) throw vaultError('drive_unavailable'); };
   const key = Buffer.from(config.identityKey, 'base64');
   if (key.length !== 32 || !/^[\w-]{43}$/.test(config.adminToken)) throw new Error('Invalid local service keys');
   const recordsFile = path.join(config.stateDir, 'phones.json');
   let records = JSON.parse(await fs.readFile(recordsFile, 'utf8').catch(e => { if (e.code === 'ENOENT') return '[]'; throw e; }));
-  const monitors = new Set(), sessions = new Map(), challenges = new Map(), attempts = new Map();
-  let selected = null, pairing = null, history = [], active = null, closed = false;
+  const monitors = new Set(), attempts = new Map();
+  let selected = null, pairing = null, history = [], closed = false;
   let queue = Promise.resolve();
   const serialize = work => { const result = queue.then(work); queue = result.catch(() => {}); return result; };
   const audit = async (type, stage) => {
@@ -34,64 +37,35 @@ export async function createVaultService(config) {
   };
   const send = (ws, event) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event)); };
   const emit = event => { if (event.type === 'transfer_progress' && history.at(-1)?.type === 'transfer_progress') history.pop(); history.push(event); for (const ws of monitors) send(ws, event); };
-  const rotate = () => {
-    if (!selected || active || history.length) return;
-    pairing = { code: String(randomInt(0, 1000000)).padStart(6, '0'), expiresAt: Date.now() + CODE_LIFETIME_MS };
-    for (const ws of monitors) send(ws, { type: 'pairing_code', ...pairing });
+  const x509 = config.tls ? new X509Certificate(config.tls.cert) : null;
+  const fingerprint = x509 ? createHash('sha256').update(x509.raw).digest('hex') : null, certExpiresAt = x509 ? Date.parse(x509.validTo) : null;
+  let lanPort = config.lanPort ?? DEFAULT_LAN_PORT;
+  const codeEvent = () => ({ type: 'pairing_code', ...pairing, fingerprint, host: config.lanHost ?? null, port: lanPort, certExpiresAt, qr: pairingQr({ host: config.lanHost, port: lanPort, fingerprint, code: pairing.code, email: selected.email }) });
+  const rotate = (lifetime = CODE_LIFETIME_MS) => {
+    if (!selected || native.active() || history.length) return;
+    pairing = { code: String(randomInt(0, 1000000)).padStart(6, '0'), expiresAt: Date.now() + lifetime, single: lifetime === MINTED_CODE_LIFETIME_MS };
+    for (const ws of monitors) send(ws, codeEvent());
   };
-  const fail = async () => { if (active) active.failed = true; emit({ type: 'transfer_failed', reason: 'Local transfer failed. Check the drive and phone connection, then reconnect.' }); await audit('failure', 'transfer'); };
   const reply = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
   const body = async req => { let size = 0, chunks = []; for await (const c of req) { size += c.length; if (size > 2 * 1024 * 1024) throw new Error('Request too large'); chunks.push(c); } return JSON.parse(Buffer.concat(chunks).toString()); };
-  const native = createNativeProtocol({ root, key, selected: () => selected, pairing: () => pairing, consumeCode: () => { pairing = null; }, records: () => records, saveRecords: async next => { await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); records = next; }, emit, audit, assertRoot, validCode });
+  const sendHistory = ws => send(ws, { type: 'transfer_history', backups: transferHistory.list(selected) });
+  const transferHistory = await createTransferHistory({ stateDir: config.stateDir, root, key, assertRoot, onChange: () => { for (const ws of monitors) sendHistory(ws); } });
+  const native = createNativeProtocol({ root, key, selected: () => selected, pairing: () => pairing, consumeCode: () => { pairing = null; }, records: () => records, saveRecords: async next => { await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); records = next; }, emit, audit, assertRoot, validCode, history: transferHistory });
+  const reject = (res, e) => { const code = errorCode(e); reply(res, STATUS[code] ?? 400, { error: ERROR_MESSAGES[code], code }); };
+  const ROUTES = ['/v1/pair/begin', '/v1/pair/confirm', '/v1/device/challenge', '/v1/backups', '/v1/backup/start', '/v1/backup/files', '/v1/backup/chunk', '/v1/backup/finish'];
   const handler = (req, res) => {
-    let authorizedActivity = false;
     res.setHeader('X-Content-Type-Options', 'nosniff');
     // Native clients do not send Origin. Reject browser LAN calls; monitoring uses its own authenticated loopback socket.
-    if (req.headers.origin) { reply(res, 403, { error: 'Native phone client required' }); return; }
+    if (req.headers.origin) return reject(res, vaultError('invalid_request'));
     void serialize(async () => {
       const url = new URL(req.url, 'https://vault.local');
-      if (req.method === 'POST' && (['/v1/pair/begin', '/v1/pair/confirm', '/v1/device/challenge', '/v1/backup/start', '/v1/backup/chunk', '/v1/backup/finish'].includes(url.pathname) || (url.pathname === '/v1/backups' && !req.headers.authorization))) {
-        if (url.pathname === '/v1/pair/begin') { const ip = req.socket.remoteAddress, limit = attempts.get(ip); if (limit && limit.until > Date.now() && limit.count >= 5) return reply(res,429,{error:'Wait one minute'}); attempts.set(ip,{count:limit && limit.until>Date.now()?limit.count+1:1,until:limit && limit.until>Date.now()?limit.until:Date.now()+60000}); }
-        const v = url.pathname === '/v1/backup/chunk' ? {} : await body(req);
-        try { return reply(res,200,await native.handle(url.pathname,v,req)); } catch { if (native.ownsRequest(url.pathname,v,req)) await native.fail(); return reply(res,400,{error:'Native request rejected; check pairing, drive, and file selection'}); }
-      }
       if (req.method === 'GET' && url.pathname === '/v1/info') return reply(res, 200, { name: 'HomeSafe Vault', version: 1 });
-      if (req.method === 'POST' && url.pathname === '/v1/challenge') {
-        const ip = req.socket.remoteAddress, limit = attempts.get(ip);
-        if (limit && limit.until > Date.now() && limit.count >= 5) return reply(res, 429, { error: 'Try again in one minute' });
-        attempts.set(ip, { count: limit && limit.until > Date.now() ? limit.count + 1 : 1, until: limit && limit.until > Date.now() ? limit.until : Date.now() + 60000 });
-        if (challenges.size > 1000) challenges.clear();
-        const challenge = token(); challenges.set(challenge, { expiresAt: Date.now() + 30000, ip }); return reply(res, 200, { challenge });
-      }
-      if (req.method === 'POST' && url.pathname === '/v1/pair') {
-        const v = pairSchema.parse(await body(req)), challenge = challenges.get(v.challenge); challenges.delete(v.challenge);
-        if (!challenge || challenge.ip !== req.socket.remoteAddress || challenge.expiresAt <= Date.now() || !selected || selected.profile !== v.profile || selected.phone !== v.phone || !validCode(pairing, v.code)) return reply(res, 401, { error: 'Pairing expired or not authorized' });
-        const publicKey = createPublicKey({ key: Buffer.from(v.publicKey, 'base64'), format: 'der', type: 'spki' });
-        if (publicKey.asymmetricKeyType !== 'ed25519' || !verify(null, Buffer.from(pairingMessage(v)), publicKey, Buffer.from(v.signature, 'base64'))) return reply(res, 401, { error: 'Device signature rejected' });
-        authorizedActivity = true; await assertRoot(); emit({ type: 'phone_connecting' });
-        const identity = { profile: v.profile, phone: v.phone, publicKey: v.publicKey };
-        const record = records.find(r => r.profile === v.profile && r.phone === v.phone);
-        if (record) { if (record.publicKey !== v.publicKey || record.revoked) throw new Error('Phone identity mismatch or revoked'); await verifyIdentity(root, key, identity); }
-        else { await enrollIdentity(root, key, identity); records.push(identity); await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(records), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); }
-        pairing = null; sessions.clear(); const session = token(); sessions.set(session, { identity, expiresAt: Date.now() + 3600000 });
-        emit({ type: 'pairing_verified', profile: v.profile, phone: v.phone }); await audit('phone_paired'); return reply(res, 200, { token: session, expiresIn: 3600 });
-      }
-      const session = sessions.get((req.headers.authorization ?? '').replace(/^Bearer /, ''));
-      if (!session || session.expiresAt <= Date.now() || !selected || session.identity.profile !== selected.profile || session.identity.phone !== selected.phone) return reply(res, 401, { error: 'Pair again on the Vault' });
-      authorizedActivity = true;
-      await assertRoot();
-      if (req.method === 'POST' && url.pathname === '/v1/backups') {
-        if (active || native.active() || history.at(-1)?.type !== 'pairing_verified') return reply(res, 409, { error: 'Reconnect before starting another backup' });
-        const t = await createTransfer(root, key, session.identity, await body(req));
-        active = { ...t, id: token(), identity: session.identity, failed: false, lastActivity: Date.now() }; emit({ type: 'transfer_started' }); emit({ type: 'transfer_progress', files: 0, total: t.files.length }); await audit('transfer_started'); return reply(res, 201, { id: active.id, name: t.name });
-      }
-      const match = url.pathname.match(/^\/v1\/backups\/([\w-]+)\/(files\/(\d+)|complete|cancel)$/);
-      if (!match || !active || active.id !== match[1] || active.failed) return reply(res, 404, { error: 'Transfer not found' });
-      if (req.method === 'PUT' && match[3] !== undefined) { active.lastActivity = Date.now(); await receiveFile(root, key, session.identity, active, Number(match[3]), req); active.lastActivity = Date.now(); emit({ type: 'transfer_progress', files: active.completed.size, total: active.files.length }); return reply(res, 200, { saved: true }); }
-      if (req.method === 'POST' && match[2] === 'complete') { await finishTransfer(root, key, session.identity, active); emit({ type: 'transfer_completed' }); active = null; sessions.clear(); await audit('transfer_completed'); return reply(res, 200, { complete: true }); }
-      if (req.method === 'POST' && match[2] === 'cancel') { await fail(); return reply(res, 200, { cancelled: true }); }
-      reply(res, 404, { error: 'Unknown operation' });
-    }).catch(async () => { if (authorizedActivity) await fail().catch(() => {}); if (!res.headersSent) reply(res, 400, { error: 'Request rejected; check pairing, file manifest, and storage. Existing backups are never replaced.' }); else res.destroy(); });
+      if (req.method !== 'POST' || !ROUTES.includes(url.pathname)) return reject(res, vaultError('invalid_request'));
+      if (url.pathname === '/v1/pair/begin') { const ip = req.socket.remoteAddress, limit = attempts.get(ip), live = limit && limit.until > Date.now(); if (live && limit.count >= 5) return reject(res, vaultError('rate_limited')); attempts.set(ip, { count: live ? limit.count + 1 : 1, until: live ? limit.until : Date.now() + 60000 }); }
+      let v = {};
+      try { if (url.pathname !== '/v1/backup/chunk') v = await body(req); return reply(res, 200, await native.handle(url.pathname, v, req)); }
+      catch (e) { if (!e.retryableManifest && native.ownsRequest(url.pathname, v, req)) await native.fail(e); return reject(res, e); }
+    }).catch(e => { if (!res.headersSent) reject(res, e); else res.destroy(); });
   };
   const monitorServer = http.createServer((req, res) => { if (req.url === '/v1/ready' && !req.headers.origin) { void assertRoot().then(() => reply(res,200,{service:'homesafe-vault',instanceId:config.instanceId,driveReady:true})).catch(() => reply(res,503,{driveReady:false})); } else reply(res,404,{error:'Use the authenticated monitor socket'}); });
   const wss = new WebSocketServer({ noServer: true, maxPayload: 4096 });
@@ -104,20 +78,28 @@ export async function createVaultService(config) {
         const v = JSON.parse(raw.toString());
         if (!authenticated) { if (v.type !== 'authenticate' || !equal(v.token, config.adminToken)) return ws.close(1008, 'Unauthorized'); authenticated = true; clearTimeout(timeout); send(ws, { type: 'service_ready' }); return; }
         if (v.type === 'select_destination' || v.type === 'reset') {
-          if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone && (selected?.email ?? '') === (v.email ?? '').toLowerCase()) { monitors.add(ws); for (const e of history) send(ws, e); if (pairing && !history.length) send(ws, { type: 'pairing_code', ...pairing }); return; }
-          if ((active && !active.failed) || native.active()) throw new Error('A transfer is active');
+          if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone && (selected?.email ?? '') === (v.email ?? '').toLowerCase()) { monitors.add(ws); sendHistory(ws); for (const e of history) send(ws, e); if (pairing && !history.length) send(ws, codeEvent()); return; }
+          if (native.active()) throw new Error('A transfer is active');
           if (v.type === 'select_destination' && [...monitors].some(m => m !== ws && m.readyState === WebSocket.OPEN)) throw new Error('Another dashboard owns the selected destination');
           monitors.add(ws);
           native.reset();
           if (v.type === 'select_destination') selected = { profile: segment.parse(v.profile), phone: segment.parse(v.phone), ...(v.email ? { email: z.string().email().max(254).parse(v.email).toLowerCase() } : {}) };
-          active = null; history = []; sessions.clear(); rotate(); await audit('profile_selected');
+          history = []; sendHistory(ws); rotate(); await audit('profile_selected');
+        }
+        if (v.type === 'verify_backup') {
+          if (!selected || !monitors.has(ws) || native.active()) throw new Error('Wait for the current transfer to finish');
+          await transferHistory.recheck(z.string().parse(v.id), selected, records); return;
+        }
+        if (v.type === 'mint_pairing') {
+          // Owner-authenticated loopback replacement for the old terminal `pair` command: single-use, 120 seconds.
+          if (!selected || !monitors.has(ws) || native.active() || history.length) throw new Error('Choose a phone and wait for any transfer to finish');
+          rotate(MINTED_CODE_LIFETIME_MS); await audit('pairing_minted'); return;
         }
         if (v.type === 'revoke_phone') {
           const profile = segment.parse(v.profile), phone = segment.parse(v.phone);
           records = records.map(r => r.profile === profile && r.phone === phone ? { ...r, revoked: true } : r);
           await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(records), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile);
-          for (const [id, s] of sessions) if (s.identity.profile === profile && s.identity.phone === phone) sessions.delete(id);
-          if (active?.identity.profile === profile && active.identity.phone === phone) await fail();
+          const owner = native.activeIdentity(); if (owner?.profile === profile && owner.phone === phone) await native.fail();
           send(ws, { type: 'phone_revoked', profile, phone }); await audit('phone_revoked');
         }
       }).catch(() => send(ws, { type: 'service_error', reason: 'Destination unavailable or transfer still active' })); });
@@ -129,7 +111,8 @@ export async function createVaultService(config) {
   lanServer.requestTimeout = 120000; lanServer.headersTimeout = 15000;
   const listen = (server, port, host) => new Promise((resolve, reject) => { server.once('error', reject); server.listen(port, host, resolve); });
   await listen(monitorServer, config.monitorPort ?? 7878, '127.0.0.1');
-  try { await listen(lanServer, config.lanPort ?? 7879, config.testOnly ? '127.0.0.1' : config.lanHost ?? '0.0.0.0'); } catch (e) { monitorServer.close(); throw e; }
-  const timer = setInterval(() => { if (!pairing || pairing.expiresAt <= Date.now()) rotate(); if (native.expired()) void serialize(() => native.fail()); if (active && !active.failed && Date.now() - active.lastActivity > 180000) { active.failed = true; void serialize(fail); } for (const [t, s] of sessions) if (s.expiresAt <= Date.now()) sessions.delete(t); for (const [t, c] of challenges) if (c.expiresAt <= Date.now()) challenges.delete(t); for (const [ip, a] of attempts) if (a.until <= Date.now()) attempts.delete(ip); }, 500);
-  return { monitorPort: monitorServer.address().port, lanPort: lanServer.address().port, async close() { if (closed) return; closed = true; clearInterval(timer); for (const ws of wss.clients) ws.terminate(); await Promise.all([new Promise(r => monitorServer.close(r)), new Promise(r => lanServer.close(r))]); } };
+  try { await listen(lanServer, lanPort, config.testOnly ? '127.0.0.1' : config.lanHost ?? '0.0.0.0'); } catch (e) { monitorServer.close(); throw e; }
+  lanPort = lanServer.address().port;
+  const timer = setInterval(() => { if (!pairing || pairing.expiresAt <= Date.now()) rotate(); if (native.expired()) void serialize(() => native.fail()); for (const [ip, a] of attempts) if (a.until <= Date.now()) attempts.delete(ip); }, 500);
+  return { monitorPort: monitorServer.address().port, lanPort, fingerprint, certExpiresAt, async close() { if (closed) return; closed = true; clearInterval(timer); for (const ws of wss.clients) ws.terminate(); await Promise.all([new Promise(r => monitorServer.close(r)), new Promise(r => lanServer.close(r))]); } };
 }

@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { LocalBackupWorkspace } from "@/components/local-backup-workspace";
 import { VaultAccess } from "@/components/vault-access";
 import { SampleTransfer } from "@/components/sample-transfer";
@@ -32,6 +32,9 @@ function Index() {
   const [mounted, setMounted] = useState(true);
   const [light, setLight] = useState(false);
   const [signedIn, setSignedIn] = useState(false);
+  const [accountEmail, setAccountEmail] = useState("");
+  const [profileName, setProfileName] = useState("");
+  const onAuth = useCallback((ok: boolean, mail: string) => { setSignedIn(ok); setAccountEmail(mail); if (!ok) setProfileName(""); }, []);
   const [monitorReady, setMonitorReady] = useState(false);
   const [workspace, setWorkspace] = useState<"monitor" | "files">("monitor");
   const [showDemo, setShowDemo] = useState(false);
@@ -82,9 +85,9 @@ function Index() {
   const tempTone = temp > 44 ? "text-destructive" : temp > 41 ? "text-warning" : "text-primary";
 
   return (
-    <main className="min-h-screen bg-background p-4 md:p-8">
-      <div className="mx-auto max-w-6xl space-y-6">
-        <header className="flex flex-wrap items-center justify-between gap-4">
+    <main className={`bg-background px-4 py-3 md:px-8 md:py-4 ${showDemo ? "min-h-svh" : "h-svh overflow-hidden"}`}>
+      <div className={`mx-auto flex max-w-6xl flex-col gap-4 ${showDemo ? "" : "h-full"}`}>
+        <header className="flex shrink-0 flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="grid h-11 w-11 place-items-center rounded-xl bg-accent glow"><Lock className="h-5 w-5 text-primary" /></div>
             <div>
@@ -104,21 +107,24 @@ function Index() {
               <span className="toggle-text">{light ? "Dark" : "Sage"}</span>
             </Button>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-col items-start gap-0.5 text-left md:items-end md:text-right">
             <span className="font-mono text-sm text-muted-foreground">{now?.toLocaleTimeString() ?? ""}</span>
+            <span className="text-xs text-muted-foreground">Only sign-in is cloud-based · backups stay local</span>
           </div>
         </header>
 
-        <VaultAccess onAuthChange={setSignedIn} />
+        <div className={`flex min-h-0 flex-col gap-4 ${showDemo ? "" : "flex-1 overflow-hidden"}`}>
+        <VaultAccess greeting={profileName} onAuthChange={onAuth} />
         {signedIn && <>
-          {monitorReady && <nav aria-label="Vault workspace" className="flex flex-wrap gap-3 border-b border-border pb-4">
+          {monitorReady && <nav aria-label="Vault workspace" className="flex shrink-0 flex-wrap gap-3 border-b border-border pb-2">
             <Button variant={workspace === "monitor" ? "secondary" : "ghost"} onClick={() => setWorkspace("monitor")}>Monitoring</Button>
             <Button variant={workspace === "files" ? "secondary" : "ghost"} onClick={() => setWorkspace("files")}>Saved backups</Button>
           </nav>}
-          {workspace === "monitor" ? <LocalVaultConnection onReady={setMonitorReady} /> : <LocalBackupWorkspace />}
+          {workspace === "monitor" ? <LocalVaultConnection key={accountEmail} email={accountEmail} onProfile={setProfileName} onReady={setMonitorReady} /> : <div className="min-h-0 flex-1 overflow-y-auto pr-1"><LocalBackupWorkspace /></div>}
         </>}
 
-        {signedIn && monitorReady && <Button variant="outline" onClick={() => setShowDemo(v => !v)}>{showDemo ? "Hide sample monitoring" : "Show sample monitoring"}</Button>}
+        </div>
+        {signedIn && monitorReady && <Button variant="outline" className="shrink-0 self-start" onClick={() => setShowDemo(v => !v)}>{showDemo ? "Hide sample monitoring" : "Show sample monitoring"}</Button>}
         {signedIn && showDemo && <>
         <p className="text-xs text-warning">Sample vault monitoring below · drive, pairing, trusted devices and restore actions are demonstrations, not connected hardware.</p>
         <SampleTransfer />

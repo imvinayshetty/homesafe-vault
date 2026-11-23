@@ -1,24 +1,75 @@
 # HomeSafe Vault
 
-Build Homesafe Vault: a dedicated desktop and touch-screen daemon management dashboard for a PC/Raspberry Pi hosting a local USB backup hard drive. Include live drive mount status, temperature, LAN IP with zero-cloud badge, 6-digit rotating MFA PIN for phone pairing, connected mobile devices list with revoke controls, and a snapshot explorer with one-click restore validation. Calm, dark sage-and-slate privacy-first design matching HomeSafe."
+A privacy-first desktop dashboard for a PC, Mac or Raspberry Pi that hosts a local USB backup drive for the HomeSafe phone app. Only sign-in (email + Authy 2FA) uses the internet; backups, pairing and transfers stay on home Wi-Fi and the local drive.
 
-This project was built with [Lovable](https://lovable.dev).
+> Documentation policy: every new feature or behaviour change must be reflected in this README in the same change.
 
-## Build with Lovable
+## Features
 
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/a696d423-ba30-4f7c-939a-f9f23f0a344d).
+### Account access (cloud sign-in only)
+- One-time registration with email + password, email confirmation, then Authy (TOTP) enrollment.
+- Authy setup shows a scannable QR code and an "Open in Authy" button; the typed setup key is a last-resort fallback.
+- Setup checklist: QR opened, account saved in Authy, 6-digit PIN verified; registration completes only after the session reaches AAL2 with a verified factor.
+- Returning users: sign in, then Authy challenge.
+- Each step opens on a fresh, focus-managed screen (`src/components/flow-screen.tsx`) with "Step X of Y" labels so actions can't be taken out of order.
+- Privacy-safe analytics: flow started / step completed / completed / failed, with fixed labels only (no emails or codes).
 
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
+### Local Vault setup
+- After sign-in: choose the backup destination, then connect to the local Vault service (auto-connected in the desktop app, access key entry in a browser).
+- Monitoring and Saved backups tabs appear only after setup finishes.
+
+### Monitoring
+- Awaiting-connection card with the Vault pairing code that refreshes every 30 seconds (shown only on this step).
+- When a phone starts connecting, a full-screen payment-app-style animation shows six stages: Awaiting connection → Establishing connection → Code verified → Initiating transfer → Transfer in progress → Backup completed.
+- Stages advance only from real Vault service events (`src/lib/vault-daemon.ts` reducer). A separate sample preview demonstrates the animation without granting access.
+- New backups are started from the HomeSafe phone app, not the dashboard.
+
+### Backups and storage
+- Folder layout: `HomeSafeBckup/<Profile>/<Phone>/Full_Bckup_DDMMYY` or `Custom_Bckup_DDMMYY`.
+- AES-256-GCM identity binds each profile/phone; identity is checked before every write. Existing backups are never overwritten; duplicate dates are rejected with a warning.
+- Multiple profiles and phones per drive; legacy profile-level backups stay read-only.
+- Saved backups filters: profile, phone, backup type, date. Warnings for disconnected drive, low space and unreadable folders (rescanned every 15 s).
+- Storage health panel: available space, 14-day backup size trend, near-capacity alerts.
+
+### Local Vault service (`vault-service/`)
+- Node companion: loopback WebSocket (7878, origin-checked + owner key) for the dashboard, LAN HTTPS (7443) for phone uploads, advertised on Wi-Fi as `_homesafe._tcp.local.` (TXT v, name, fp) so phones find the Vault and pin its certificate without typing.
+- Handles pairing codes, device connections, uploads, disk readback, and HomeSafe's native signed begin/confirm + chunk protocol.
+- Bounded local event log only; no cloud tracking of backups.
+- CLI: `init`, `start`, `access`, `install` (guided installer: drive check, TLS cert, systemd / Task Scheduler auto-start, readiness check), `doctor`. Replaced drives are rejected at startup.
+- See `vault-service/README.md`.
+
+### Desktop app (`electron/`)
+- Bundles the dashboard (`DESKTOP=1` static build served from `app://vault`) so no web address or Lovable login is needed.
+- Automatically starts the Vault service in the background, launches at login, and restarts it with backoff if it stops.
+- First launch asks once for the HomeSafeBckup folder; Wi-Fi address changes are picked up automatically.
+- Owner key exposed to the dashboard only through origin-checked IPC.
+- Builds: Windows x64, macOS Apple Silicon, macOS Intel, Linux arm64. See `electron/README.md`.
+
+### Appearance
+- Calm sage (light) and dark slate themes with a toggle at the top; preference remembered and follows system setting by default.
 
 ## Development
 
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
-
 ```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
+bun install
+bun run dev
+bunx vitest run          # dashboard tests
+cd vault-service && npm test
 ```
+
+## Zero-configuration automation
+- The Vault service follows the current home Wi-Fi address (default-route IPv4) on every start; no host setting.
+- The desktop app looks for the backup drive itself (an existing `HomeSafeBckup` folder, else the external drive with most free space) but never creates or adopts the folder silently: a dialog shows the drive name, size and free space with **Use this drive** / **Choose another folder**. The answer is remembered with the drive identity; a replaced drive is rejected.
+- The Wi-Fi address is re-checked every 30 seconds; on a change the phone connection restarts on the new address and is re-advertised. The 5-year certificate is kept (phones pin it); the dashboard shows its expiry and warns 60 days before.
+- Phones discover the Vault over Wi-Fi via mDNS `_homesafe._tcp.local.` (name "HomeSafe Vault" + short random suffix, TXT `v`, `fp`) on port 7443.
+- **Pair mobile device** button on the Awaiting connection card asks the service (over the owner-authenticated local socket) for a single-use 6-digit code valid 120 seconds; the dashboard shows the code, a countdown ring and a scannable `homesafe://pair?v=1&host=&port=&fp=&code=&email=` QR, plus a copyable `https://<host>:7443` address and grouped certificate fingerprint for manual pairing. Without pressing it, codes still rotate every 30 seconds.
+- Phones use only Phone protocol v1 (signed native protocol with `{error, code}` errors and manifest paging); the old bearer-token API was removed. Full reference: `vault-service/README.md`.
+- Paged backups start with `files: []`, `fileCount` (1–500,000) and signed total `bytes`; pages carry `transferId`, `token`, `offset` and up to 5,000 files. Offsets must equal the accepted count; invalid paths, duplicates, overflow and size mismatches are rejected. File data and completion remain blocked until the full size-matched list arrives; early attempts can be retried after valid pages without ending the transfer.
+- Autostart templates for service-only installs: `vault-service/autostart/` (macOS LaunchAgent plist, systemd user unit, Windows hidden Task Scheduler script). The desktop app starts the service itself.
+- Screens fit the window without scrolling; only "Show sample monitoring" extends the page, and the Saved backups list scrolls inside its own panel.
+
+## Vault connection after Authy
+- The Authy-verified account email is used automatically; it is never asked again.
+- First time on this PC: **Name your profile** (own screen) → **Name this phone** → connect. Linking another phone for a remembered profile skips the profile step (Step 1 of 2).
+- Once the profile is known the top bar reads **Hi <profile> · Authy verified** instead of the email.
+- The header shows one line under the clock: "Only sign-in is cloud-based · backups stay local".
