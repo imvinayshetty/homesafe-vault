@@ -119,7 +119,7 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     if (!Number.isInteger(index) || !Number.isInteger(offset) || !entry || t.completed.has(index) || offset !== (t.offsets.get(index) ?? 0)) throw new Error('Invalid offset');
     let bytes = 0, chunks = []; for await (const c of req) { bytes += c.length; if (bytes > 4194304 || offset + bytes > entry.bytes) throw new Error('Chunk too large'); chunks.push(c); }
     const data = Buffer.concat(chunks); if (createHash('sha256').update(data).digest('hex') !== h['x-sha256']) throw new Error('Chunk digest mismatch');
-    await assertRoot(); await verifyIdentity(root, key, t.identity); let parent = await directory(await verifyIdentity(root, key, t.identity), t.name); const parts = entry.path.split('/'); for (const p of parts.slice(0,-1)) parent = await directory(parent,p,true);
+    await assertRoot(); await verifyIdentity(root, key, t.identity); let parent = await directory(await verifyIdentity(root, key, t.identity), t.name); const parts = entry.path.split('/'); for (const p of parts.slice(0,-1)) parent = await directory(parent,p,true,true);
     const target = path.join(parent, parts.at(-1));
     const handle = await fs.open(target, constants.O_WRONLY | constants.O_NOFOLLOW | (offset === 0 ? constants.O_CREAT | constants.O_EXCL : 0), 0o600);
     try { if ((await handle.stat()).size !== offset) throw new Error('File offset changed'); let written=0; while(written<data.length) {const result=await handle.write(data,written,data.length-written,offset+written);written+=result.bytesWritten;} await handle.sync(); } finally { await handle.close(); }

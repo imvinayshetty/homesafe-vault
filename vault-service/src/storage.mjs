@@ -9,11 +9,15 @@ const manifestFiles = z.array(z.object({ path: filePath, bytes: z.number().int()
 export const manifestSchema = z.object({ kind: z.enum(['Full', 'Custom']), name: segment.optional(), files: manifestFiles.min(1) });
 const pagedManifestSchema = manifestSchema.extend({ files: manifestFiles.length(0) });
 export function dateCode(d = new Date()) { return [d.getDate(), d.getMonth() + 1, d.getFullYear() % 100].map(v => String(v).padStart(2, '0')).join(''); }
-export async function directory(parent, name, create = false) {
+// `sameFolderIgnoringCase` is for folders INSIDE a backup (DCIM vs dcim, Download vs download): phones can hold both
+// spellings, but drives are usually case-insensitive, so they are one folder here. Identity, profile, phone and backup
+// folders stay strict.
+export async function directory(parent, name, create = false, sameFolderIgnoringCase = false) {
   segment.parse(name);
   const names = await fs.readdir(parent);
   const collision = names.find(n => n.toLowerCase() === name.toLowerCase());
-  if (collision && collision !== name) throw new Error('Folder spelling collision');
+  if (collision && collision !== name && !sameFolderIgnoringCase) throw new Error('Folder spelling collision');
+  if (collision && sameFolderIgnoringCase) name = collision;
   const target = path.join(parent, name);
   if (!collision && create) await fs.mkdir(target, { mode: 0o700 });
   const stat = await fs.lstat(target);
@@ -74,7 +78,7 @@ export async function receiveFile(root, key, identity, t, index, stream) {
   const phone = await phoneFolder(root, identity.profile, identity.phone);
   let parent = await directory(phone, t.name);
   const parts = entry.path.split('/');
-  for (const part of parts.slice(0, -1)) parent = await directory(parent, part, true);
+  for (const part of parts.slice(0, -1)) parent = await directory(parent, part, true, true);
   const target = path.join(parent, parts.at(-1));
   const names = await fs.readdir(parent);
   if (names.some(n => n.toLowerCase() === parts.at(-1).toLowerCase())) throw new Error('File collision');
@@ -112,7 +116,7 @@ export async function verifyBackupFiles(root, key, identity, t, onProgress) {
     let issue;
     try {
     let parent = await directory(await phoneFolder(root, identity.profile, identity.phone), t.name);
-    const parts = entry.path.split('/'); for (const p of parts.slice(0, -1)) parent = await directory(parent, p);
+    const parts = entry.path.split('/'); for (const p of parts.slice(0, -1)) parent = await directory(parent, p, false, true);
     const h = await fs.open(path.join(parent, parts.at(-1)), constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
       const stat = await h.stat();
