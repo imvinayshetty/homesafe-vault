@@ -58,7 +58,7 @@ export function TransferStatus({ profile, phone, email = "", accessKey = "" }: {
   const errors = serviceError && <p role="alert" className="text-sm text-destructive">{serviceError}</p>;
   if (state.stage === 0 && !state.failed) return <><AwaitingCard service={service} profile={profile} phone={phone} pairing={pairing} onMint={service === "online" ? () => socketRef.current?.send(JSON.stringify({ type: "mint_pairing" })) : undefined} />{errors}{historyPanel}</>;
   if (showHistory) return <><div className="flex flex-wrap items-center justify-between gap-2"><p role="status" className={`text-sm ${state.failed ? "text-destructive" : "text-primary"}`}>{state.failed ? state.failed : state.verifying ? "Checking backup integrity" : transferSteps(profile, phone)[state.stage]}</p><Button variant="outline" onClick={() => setShowHistory(false)}>Open transfer</Button></div>{errors}{historyPanel}</>;
-  return <TransferScreen state={state} profile={profile} phone={phone} service={service} onViewHistory={() => setShowHistory(true)} onClose={state.failed || state.stage === 5 ? () => { socketRef.current?.send(JSON.stringify({ type: "reset" })); stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
+  return <TransferScreen state={state} profile={profile} phone={phone} service={service} onCancel={() => socketRef.current?.send(JSON.stringify({ type: "cancel_transfer" }))} onViewHistory={() => setShowHistory(true)} onClose={state.failed || state.stage === 5 ? () => { socketRef.current?.send(JSON.stringify({ type: "reset" })); stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
 }
 
 type Service = "checking" | "online" | "offline";
@@ -85,7 +85,7 @@ export function AwaitingCard({ service, profile, phone, sample, action, pairing,
 }
 
 /** Full-screen payment-style transfer animation, from Establishing connection onwards. */
-export function TransferScreen({ state, profile, phone, service, onClose, onViewHistory, sample }: { state: TransferState; profile: string; phone: string; service: Service; onClose?: (() => void) | undefined; onViewHistory?: () => void; sample?: boolean }) {
+export function TransferScreen({ state, profile, phone, service, onClose, onViewHistory, onCancel, sample }: { state: TransferState; profile: string; phone: string; service: Service; onClose?: (() => void) | undefined; onViewHistory?: () => void; onCancel?: () => void; sample?: boolean }) {
   const { stage, failed, progress } = state;
   const speed = state.bytesPerSecond !== undefined ? `${(state.bytesPerSecond / 1048576).toFixed(1)} MB/s` : "";
   const steps = transferSteps(profile, phone);
@@ -134,7 +134,7 @@ export function TransferScreen({ state, profile, phone, service, onClose, onView
       <ol className="flex w-full max-w-md items-center gap-1.5" aria-label={`Step ${stage + 1} of 6`}>
         {steps.map((label, i) => <li key={i} title={label} className={`h-1.5 flex-1 rounded-full transition-colors duration-500 ${failed && i === stage ? "bg-destructive" : i < stage || (i === stage && (i === 2 || i === 5)) ? "bg-primary" : i === stage ? "bg-primary/50 animate-pulse" : "bg-muted"}`}><span className="sr-only">{label}</span></li>)}
       </ol>
-      <div className="flex flex-wrap justify-center gap-2">{onClose && <Button onClick={onClose} className="min-h-11 px-8">{failed ? "Back to dashboard" : stage === 5 ? "Done" : "Close sample"}</Button>}{onViewHistory && <Button variant="outline" onClick={onViewHistory}>View transfer history</Button>}</div>
+      <div className="flex flex-wrap justify-center gap-2">{onClose && <Button onClick={onClose} className="min-h-11 px-8">{failed ? "Back to dashboard" : stage === 5 ? "Done" : "Close sample"}</Button>}{onViewHistory && <Button variant="outline" onClick={onViewHistory}>View transfer history</Button>}{onCancel && !failed && stage >= 3 && stage < 5 && <Button variant="destructive" className="min-h-11" onClick={() => { if (window.confirm("Cancel this backup? Files already copied stay on the drive, but this backup will be marked as stopped.")) onCancel(); }}>Cancel backup</Button>}</div>
       <p className="text-xs text-muted-foreground">{sample ? "Sample preview · no phone or drive is connected." : "This screen moves only when the local Vault service on this computer reports progress."}</p>
       <div className="flex-1" aria-hidden />
     </div>

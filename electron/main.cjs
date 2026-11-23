@@ -30,6 +30,7 @@ const configPath = path.join(stateDir, 'config.json');
 const serviceDir = app.isPackaged ? path.join(process.resourcesPath, 'vault-service') : path.join(__dirname, '..', 'vault-service');
 let service = null, win = null, lastError = '', pickedSource = 'chosen';
 
+const recovery = () => import(pathToFileURL(path.join(serviceDir, 'src', 'recovery.mjs')).href);
 const discovery = () => import(pathToFileURL(path.join(serviceDir, 'src', 'discovery.mjs')).href);
 async function lanIP() { return (await discovery()).defaultRouteIPv4(); }
 const gib = n => `${(n / 1024 ** 3).toFixed(1)} GB`;
@@ -108,6 +109,31 @@ async function adoptRoot(cfg, chosen) {
   await fsp.writeFile(configPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
 }
 
+// A small password window (Electron's dialogs have no text input). Resolves with the text, or null if skipped or closed.
+function askPassphrase(message) {
+  return new Promise(resolve => {
+    const w = new BrowserWindow({ width: 480, height: 280, resizable: false, minimizable: false, maximizable: false, title: 'HomeSafe Vault recovery', webPreferences: { preload: path.join(__dirname, 'prompt-preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+    w.setMenu(null);
+    let done = false; const finish = v => { if (done) return; done = true; ipcMain.removeListener('prompt:submit', onSubmit); ipcMain.removeListener('prompt:cancel', onCancel); resolve(v); if (!w.isDestroyed()) w.close(); };
+    const onSubmit = (ev, v) => { if (ev.sender === w.webContents) finish(String(v ?? '')); };
+    const onCancel = ev => { if (ev.sender === w.webContents) finish(null); };
+    ipcMain.on('prompt:submit', onSubmit); ipcMain.on('prompt:cancel', onCancel); w.on('closed', () => finish(null));
+    const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    const html = `<!doctype html><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><body style="font:15px system-ui;margin:20px;line-height:1.4"><p>${esc(message)}</p><input id="p" type="password" autofocus style="width:100%;padding:8px;box-sizing:border-box"><p style="margin-top:16px"><button id="ok" style="padding:6px 16px">Restore</button> <button id="no" style="padding:6px 16px">Skip</button></p><script>document.getElementById('ok').onclick=()=>prompt.submit(document.getElementById('p').value);document.getElementById('no').onclick=()=>prompt.cancel();document.getElementById('p').onkeydown=e=>{if(e.key==='Enter')document.getElementById('ok').click()}</script>`;
+    void w.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+  });
+}
+// The recovery file on the drive holds the Vault's keys, encrypted. Ask for the passphrase (5 tries); null means start with new keys.
+async function restoreSecrets(rc, found) {
+  let note = `Recovery data for this Vault was found on the drive (${found.phones.length} phone${found.phones.length === 1 ? '' : 's'}). Enter your recovery passphrase to restore the Vault exactly as it was, so phones keep working without pairing again.`;
+  for (let i = 0; i < 5; i++) {
+    const pass = await askPassphrase(note);
+    if (pass === null) return null;
+    try { return rc.openVault(found.vault, pass); } catch { note = `That passphrase did not work (${4 - i} tries left). Enter your recovery passphrase, or Skip to set up with new keys (phones will need to pair again).`; }
+  }
+  return null;
+}
+
 async function firstRunSetup() {
   if (fs.existsSync(configPath)) {
     const existing = JSON.parse(await fsp.readFile(configPath, 'utf8'));
@@ -120,14 +146,24 @@ async function firstRunSetup() {
   }
   const chosen = await chooseBackupRoot(); // the answer is remembered in config.json with the drive identity
   const { root, st } = await prepareRoot(chosen);
+  const rc = await recovery(), found = await rc.readRecovery(root), restored = found?.vault ? await restoreSecrets(rc, found) : null;
   const ip = await lanIP(); if (!ip) throw new Error('Connect this PC to your home Wi-Fi first');
   await fsp.mkdir(stateDir, { recursive: true, mode: 0o700 });
-  const selfsigned = require('selfsigned');
-  const pems = selfsigned.generate([{ name: 'commonName', value: 'HomeSafe Vault' }], { days: 1825, keySize: 2048, algorithm: 'sha256', extensions: [{ name: 'subjectAltName', altNames: [{ type: 7, ip }] }] });
   const cert = path.join(stateDir, 'vault.crt'), key = path.join(stateDir, 'vault.key');
-  await fsp.writeFile(cert, pems.cert, { flag: 'wx' }); await fsp.writeFile(key, pems.private, { flag: 'wx', mode: 0o600 });
-  const config = { root, locationSource: pickedSource, driveIdentity: { dev: st.dev, ino: st.ino }, instanceId: crypto.randomBytes(16).toString('hex'), origins: [ORIGIN], adminToken: crypto.randomBytes(32).toString('base64url'), identityKey: crypto.randomBytes(32).toString('base64'), cert, key, lanHost: ip };
+  if (restored) { await fsp.writeFile(cert, restored.cert, { flag: 'wx' }); await fsp.writeFile(key, restored.key, { flag: 'wx', mode: 0o600 }); }
+  else {
+    const selfsigned = require('selfsigned');
+    const pems = selfsigned.generate([{ name: 'commonName', value: 'HomeSafe Vault' }], { days: 1825, keySize: 2048, algorithm: 'sha256', extensions: [{ name: 'subjectAltName', altNames: [{ type: 7, ip }] }] });
+    await fsp.writeFile(cert, pems.cert, { flag: 'wx' }); await fsp.writeFile(key, pems.private, { flag: 'wx', mode: 0o600 });
+  }
+  const config = { root, locationSource: pickedSource, driveIdentity: { dev: st.dev, ino: st.ino }, instanceId: crypto.randomBytes(16).toString('hex'), origins: [ORIGIN], adminToken: crypto.randomBytes(32).toString('base64url'), identityKey: restored ? restored.identityKey : crypto.randomBytes(32).toString('base64'), cert, key, lanHost: ip };
   await fsp.writeFile(configPath, JSON.stringify(config, null, 2), { flag: 'wx', mode: 0o600 });
+  if (found?.phones.length) {
+    // Who owns which profile and phone, and which phones were revoked, comes back from the drive.
+    await fsp.writeFile(path.join(stateDir, 'phones.json'), JSON.stringify(found.phones), { flag: 'wx', mode: 0o600 }).catch(() => {});
+    await dialog.showMessageBox({ type: 'info', title: 'HomeSafe Vault', message: restored ? 'Vault restored' : 'Phone list restored', noLink: true,
+      detail: restored ? `${found.phones.length} phone(s) restored. They keep working; no need to pair again.` : `${found.phones.length} phone(s) restored by name. Each phone must pair again once (same profile and phone name); its backups are kept.` });
+  }
   return config;
 }
 

@@ -17,6 +17,8 @@ export const ERROR_MESSAGES = {
   rate_limited: 'Too many attempts; wait one minute.',
   invalid_request: 'Request rejected; check the signature and request fields.',
   phone_stopped: 'The phone stopped the backup.',
+  vault_cancelled: 'The backup was cancelled on the Vault.',
+  transfer_stopped: 'The Vault has stopped this backup.',
   integrity_mismatch: 'Backup verification found files that do not match the transferred data.',
 };
 export const vaultError = code => Object.assign(new Error(code), { vaultCode: code });
@@ -38,6 +40,8 @@ export function nativeSignature(publicKey, signature, value) {
 const entrySchema = z.object({ path: filePath, bytes: z.number().int().nonnegative().max(1024 ** 4), modified: z.number().int().nonnegative().optional() });
 // A transfer that sees no traffic for this long is abandoned; until then a phone that lost Wi-Fi can resume it.
 /** Bytes per second over roughly the last five seconds of received data. */
+/** Data is flushed to the drive at the end of every file and after this many bytes; the finished backup is still re-read and hash-checked before it is reported complete. */
+const SYNC_EVERY_BYTES = 64 * 1024 * 1024;
 export const speedOf = (t, now = Date.now()) => { const s = (t.samples ??= []); s.push([now, t.receivedBytes]); while (s.length > 2 && now - s[0][0] > 5000) s.shift(); const [t0, b0] = s[0]; return now > t0 ? Math.max(0, Math.round((t.receivedBytes - b0) * 1000 / (now - t0))) : 0; };
 export const TRANSFER_IDLE_MS = 20 * 60 * 1000;
 const BASELINE_PAGE = 5000, BASELINE_TTL_MS = 10 * 60 * 1000;
@@ -52,7 +56,7 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
   if (!c || c.deviceId !== v.deviceId || c.expiresAt <= Date.now()) throw vaultError('code_expired');
   nativeSignature(r.publicKey, v.signature, { deviceId: v.deviceId, challenge: v.challenge, action, ...extra }); return r;
  };
- const authorizedTransfer = v => { if (!transfer || transfer.failed || transfer.id !== v.transferId || transfer.token !== v.token) throw vaultError('invalid_request'); device(transfer.deviceId); return transfer; };
+ const authorizedTransfer = v => { if (transfer?.failed && transfer.id === v.transferId && transfer.token === v.token) throw vaultError('transfer_stopped'); if (!transfer || transfer.failed || transfer.id !== v.transferId || transfer.token !== v.token) throw vaultError('invalid_request'); device(transfer.deviceId); return transfer; };
  // Incomplete manifests reject data/completion before any write without poisoning the transfer.
  const requireManifest = t => { if (t.files.length !== t.totalFiles || t.bytes !== t.totalBytes) throw Object.assign(vaultError('too_many_files'), { retryableManifest: true }); };
  return {
@@ -85,7 +89,10 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
       // The same account pairing a phone of the same name again (app reinstalled, new phone): the owner approved it on this Vault, so it replaces the old identity.
       if (r.email !== p.email || records().some(o => o !== r && o.deviceId === p.deviceId)) throw new Error('Phone identity mismatch');
       await adoptOrphanIdentity(root, key, identity(p)); await saveRecords(records().map(o => o === r ? { ...o, deviceId: p.deviceId, publicKey: p.publicKey } : o)); await audit('phone_repaired');
-     } else await verifyIdentity(root, key, identity(r));
+     } else {
+      // Same phone and key, but its seal on the drive was made by a Vault whose key is gone (names-only recovery): the owner is pairing it again, so seal it anew.
+      try { await verifyIdentity(root, key, identity(r)); } catch { await adoptOrphanIdentity(root, key, identity(r)); await audit('phone_resealed'); }
+     }
     }
     else { if (records().some(r => r.deviceId === p.deviceId)) throw new Error('Device already enrolled elsewhere');
     // The phone folder exists but this Vault has no record of it (app data was reset or the key was lost): the phone being paired now takes it over. Another account's profile was already refused when the profile was selected.
@@ -138,15 +145,18 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     if (!Number.isInteger(index) || !Number.isInteger(offset) || !entry || t.completed.has(index) || offset !== (t.offsets.get(index) ?? 0)) throw notBefore(new Error('Invalid offset'), true);
     let bytes = 0, chunks = []; try { for await (const c of req) { bytes += c.length; if (bytes > 4194304 || offset + bytes > entry.bytes) throw new Error('Chunk too large'); chunks.push(c); } } catch (e) { throw e.message === 'Chunk too large' ? e : notBefore(e, true); } // a dropped connection writes nothing, so the phone may retry
     const data = Buffer.concat(chunks); if (createHash('sha256').update(data).digest('hex') !== h['x-sha256']) throw notBefore(new Error('Chunk digest mismatch'), true);
-    await assertRoot(); await verifyIdentity(root, key, t.identity); let parent = await directory(await verifyIdentity(root, key, t.identity), t.name); const parts = entry.path.split('/'); for (const p of parts.slice(0,-1)) parent = await directory(parent,p,true,true);
+    await assertRoot(); const parts = entry.path.split('/'), dirKey = parts.slice(0,-1).join('/').toLowerCase();
+    // Resolve the phone folder and each sub-folder once per transfer; re-reading them for every 4 MiB chunk was a large share of the time on drives with big folders.
+    t.dirs ??= new Map(); let parent = t.dirs.get(dirKey);
+    if (!parent) { let cur = t.baseDir ??= await directory(await verifyIdentity(root, key, t.identity), t.name); for (const p of parts.slice(0,-1)) cur = await directory(cur,p,true,true); parent = cur; t.dirs.set(dirKey, parent); }
     const target = path.join(parent, parts.at(-1));
     const handle = await fs.open(target, constants.O_WRONLY | constants.O_NOFOLLOW | (offset === 0 ? constants.O_CREAT | constants.O_EXCL : 0), 0o600);
-    try { if ((await handle.stat()).size !== offset) throw new Error('File offset changed'); let written=0; while(written<data.length) {const result=await handle.write(data,written,data.length-written,offset+written);written+=result.bytesWritten;} await handle.sync(); } finally { await handle.close(); }
+    try { if ((await handle.stat()).size !== offset) throw new Error('File offset changed'); let written=0; while(written<data.length) {const result=await handle.write(data,written,data.length-written,offset+written);written+=result.bytesWritten;} if (offset+bytes === entry.bytes || (t.unsynced = (t.unsynced ?? 0) + bytes) >= SYNC_EVERY_BYTES) { await handle.sync(); t.unsynced = 0; } } finally { await handle.close(); }
     const hash = t.hashes.get(index) ?? createHash('sha256'); hash.update(data); t.hashes.set(index,hash); t.offsets.set(index,offset+bytes); t.lastActivity=Date.now();
     t.receivedBytes += bytes;
     if (offset+bytes === entry.bytes) { entry.sha256=hash.digest('hex'); t.completed.add(index); }
     emit({ type: 'transfer_progress', files: t.completed.size, total: t.totalFiles, bytes: t.receivedBytes, totalBytes: t.totalBytes, bytesPerSecond: speedOf(t) });
-    await history.update(t.id, { receivedFiles: t.completed.size, receivedBytes: t.receivedBytes });
+    if (Date.now() - (t.historySavedAt ?? 0) >= 2000 || t.completed.size === t.totalFiles) { t.historySavedAt = Date.now(); await history.update(t.id, { receivedFiles: t.completed.size, receivedBytes: t.receivedBytes }); }
     return { received: offset+bytes };
    }
    if (route === '/v1/backup/resume') {

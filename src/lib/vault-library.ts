@@ -44,3 +44,24 @@ export function fetchLibrary(accessKey: string, email: string, profile?: string)
     };
   });
 }
+
+export interface RecoveryStatus { phones: number; namesSaved: boolean; fullEnabled: boolean }
+/** Asks the local Vault service about, or turns on, the recovery copy kept on the backup drive. Rejects with a readable reason. */
+export function recoveryRequest(accessKey: string, passphrase?: string): Promise<RecoveryStatus> {
+  return new Promise((resolve, reject) => {
+    let ws: WebSocket;
+    const timer = setTimeout(() => finish(new Error("The Vault service did not answer.")), 10000);
+    const finish = (r: RecoveryStatus | Error) => { clearTimeout(timer); try { ws.close(); } catch { /* closed */ } if (r instanceof Error) reject(r); else resolve(r); };
+    try { ws = new WebSocket(DAEMON_URL); } catch { clearTimeout(timer); reject(new Error("The Vault service is not running.")); return; }
+    ws.onopen = () => ws.send(JSON.stringify({ type: "authenticate", token: accessKey }));
+    ws.onerror = () => finish(new Error("The Vault service is not running."));
+    ws.onmessage = m => {
+      try {
+        const msg = JSON.parse(String(m.data));
+        if (msg.type === "service_ready") ws.send(JSON.stringify(passphrase ? { type: "set_recovery_passphrase", passphrase } : { type: "recovery_status" }));
+        else if (msg.type === "service_error") finish(new Error(String(msg.reason)));
+        else if (msg.type === "recovery_status" && Number.isFinite(msg.phones)) finish({ phones: Number(msg.phones), namesSaved: msg.namesSaved === true, fullEnabled: msg.fullEnabled === true });
+      } catch { finish(new Error("Unexpected answer from the Vault service.")); }
+    };
+  });
+}

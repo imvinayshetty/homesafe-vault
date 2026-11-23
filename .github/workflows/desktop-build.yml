@@ -168,7 +168,7 @@ jobs:
         working-directory: electron
         run: |
           npx electron-packager . "HomeSafe Vault" --platform=darwin --arch=arm64,x64 --out=release --overwrite \
-            --extra-resource=../vault-service --extra-resource=../dist/client --ignore=^/release
+            --extra-resource=../vault-service --extra-resource=../dist/client --extend-info=mac-info.plist --ignore=^/release
           for a in arm64 x64; do
             node rename-dashboard.cjs "release/HomeSafe Vault-darwin-$a/HomeSafe Vault.app/Contents/Resources"
           done
@@ -179,6 +179,9 @@ jobs:
           for a in arm64 x64; do
             APP="release/HomeSafe Vault-darwin-$a/HomeSafe Vault.app"; R="$APP/Contents/Resources"
             test -f "$APP/Contents/MacOS/HomeSafe Vault"
+            # macOS asks for removable-drive and local-network access using these texts; without them the prompts never appear and the drive or phone cannot be reached.
+            grep -q NSRemovableVolumesUsageDescription "$APP/Contents/Info.plist"
+            grep -q _homesafe._tcp "$APP/Contents/Info.plist"
             test -f "$R/dashboard/index.html"
             test -f "$R/vault-service/src/cli.mjs"
             test -f "$R/vault-service/src/discovery.mjs"

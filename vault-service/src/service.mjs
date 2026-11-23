@@ -7,6 +7,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
 import { segment } from './storage.mjs';
 import { buildLibrary } from './library.mjs';
+import { mirrorPhones, readRecovery, writeVault } from './recovery.mjs';
 import { createNativeProtocol, vaultError, errorCode, ERROR_MESSAGES } from './native-protocol.mjs';
 import { createTransferHistory } from './transfer-history.mjs';
 export const CODE_LIFETIME_MS = 30000;
@@ -61,7 +62,7 @@ export async function createVaultService(config) {
   const body = async req => { let size = 0, chunks = []; for await (const c of req) { size += c.length; if (size > 2 * 1024 * 1024) throw new Error('Request too large'); chunks.push(c); } return JSON.parse(Buffer.concat(chunks).toString()); };
   const sendHistory = ws => send(ws, { type: 'transfer_history', backups: transferHistory.list(selected) });
   const transferHistory = await createTransferHistory({ stateDir: config.stateDir, root, key, assertRoot, onChange: () => { for (const ws of monitors) sendHistory(ws); } });
-  const native = createNativeProtocol({ root, key, selected: () => selected, pairing: () => pairing, consumeCode: () => { pairing = null; }, records: () => records, saveRecords: async next => { await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); records = next; }, emit, audit, assertRoot, validCode, history: transferHistory });
+  const native = createNativeProtocol({ root, key, selected: () => selected, pairing: () => pairing, consumeCode: () => { pairing = null; }, records: () => records, saveRecords: async next => { await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); records = next; await mirrorPhones(root, next); }, emit, audit, assertRoot, validCode, history: transferHistory });
   const reject = (res, e) => { const code = errorCode(e); reply(res, STATUS[code] ?? 400, { error: ERROR_MESSAGES[code], code }); };
   const ROUTES = ['/v1/pair/begin', '/v1/pair/confirm', '/v1/device/challenge', '/v1/backups', '/v1/backup/start', '/v1/backup/files', '/v1/backup/chunk', '/v1/backup/resume', '/v1/backup/baseline', '/v1/status', '/v1/backup/abort', '/v1/backup/problem', '/v1/backup/replace', '/v1/backup/finish'];
   const handler = (req, res) => {
@@ -88,6 +89,18 @@ export async function createVaultService(config) {
       ws.on('message', raw => { void serialize(async () => {
         const v = JSON.parse(raw.toString());
         if (!authenticated) { if (v.type !== 'authenticate' || !equal(v.token, config.adminToken)) return ws.close(1008, 'Unauthorized'); authenticated = true; clearTimeout(timeout); send(ws, { type: 'service_ready' }); return; }
+        if (v.type === 'recovery_status' || v.type === 'set_recovery_passphrase') {
+          // Level 2 recovery: the Vault's identity key and TLS key, encrypted on the drive with a passphrase only the owner knows.
+          if (v.type === 'set_recovery_passphrase') {
+            const tls = config.tls ?? { cert: await fs.readFile(config.cert, 'utf8').catch(() => ''), key: await fs.readFile(config.key, 'utf8').catch(() => '') };
+            if (!tls.cert || !tls.key) throw Object.assign(new Error('No certificate to protect'), { userMessage: 'This Vault has no certificate to protect.' });
+            await assertRoot(); await writeVault(root, v.passphrase, { identityKey: config.identityKey, cert: String(tls.cert), key: String(tls.key) }); await audit('recovery_enabled');
+          }
+          await mirrorPhones(root, records);
+          const rec = await readRecovery(root);
+          send(ws, { type: 'recovery_status', phones: rec?.phones.length ?? 0, namesSaved: Boolean(rec), fullEnabled: Boolean(rec?.vault) }); return;
+        }
+        if (v.type === 'cancel_transfer') { if (native.active()) await native.fail(vaultError('vault_cancelled')); return; }
         if (v.type === 'list_library') { await assertRoot(); send(ws, await buildLibrary({ root, records, email: z.string().email().max(254).parse(v.email).toLowerCase(), profile: v.profile === undefined ? undefined : segment.parse(v.profile) })); return; }
         if (v.type === 'select_destination' && v.email && records.some(r => r.profile.toLowerCase() === String(v.profile).toLowerCase() && r.email !== String(v.email).toLowerCase())) throw Object.assign(new Error('This profile belongs to another account'), { userMessage: 'This profile belongs to another account. Sign in with that account and its Authy code, or choose your own profile.' });
         if (v.type === 'select_destination' || v.type === 'reset') {
@@ -113,7 +126,7 @@ export async function createVaultService(config) {
         if (v.type === 'revoke_phone') {
           const profile = segment.parse(v.profile), phone = segment.parse(v.phone);
           records = records.map(r => r.profile === profile && r.phone === phone ? { ...r, revoked: true } : r);
-          await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(records), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile);
+          await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(records), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); await mirrorPhones(root, records);
           const owner = native.activeIdentity(); if (owner?.profile === profile && owner.phone === phone) await native.fail();
           send(ws, { type: 'phone_revoked', profile, phone }); await audit('phone_revoked');
         }
@@ -128,6 +141,7 @@ export async function createVaultService(config) {
   await listen(monitorServer, config.monitorPort ?? 7878, '127.0.0.1');
   try { await listen(lanServer, lanPort, config.testOnly ? '127.0.0.1' : config.lanHost ?? '0.0.0.0'); } catch (e) { monitorServer.close(); throw e; }
   lanPort = lanServer.address().port;
+  await mirrorPhones(root, records);
   const timer = setInterval(() => { if (!pairing || pairing.expiresAt <= Date.now()) rotate(); if (native.expired()) void serialize(() => native.fail()); for (const [ip, a] of attempts) if (a.until <= Date.now()) attempts.delete(ip); }, 500);
   return { monitorPort: monitorServer.address().port, lanPort, fingerprint, certExpiresAt, async close() { if (closed) return; closed = true; clearInterval(timer); for (const ws of wss.clients) ws.terminate(); await Promise.all([new Promise(r => monitorServer.close(r)), new Promise(r => lanServer.close(r))]); } };
 }

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { HardDrive, Link, Unplug, ArrowRight, FolderCheck, Smartphone, UserRound } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { fetchLibrary, type Library } from "@/lib/vault-library";
+import { RecoveryPanel } from "@/components/recovery-panel";
 import { Button } from "@/components/ui/button";
 import { TransferStatus } from "@/components/transfer-status";
 import { FlowScreen } from "@/components/flow-screen";
@@ -136,6 +137,7 @@ export function LocalVaultConnection({ email, onReady, onProfile }: { email: str
           <p className="text-muted-foreground">{location.source === "auto" ? "Found automatically on a connected drive." : "Chosen by you."}{location.connected ? ` Free space: ${gb(location.freeBytes)} of ${gb(location.totalBytes)}.` : ""}</p>
           {!location.connected && <p role="alert" className="text-destructive">{location.problem ?? "The backup drive is not connected."}</p>}
         </div>}
+        {desktop() && <RecoveryPanel getKey={() => desktop()!.getAccessKey()} />}
         <Button type="submit" className="min-h-12 w-full" disabled={!location?.connected}>Yes, this is correct<ArrowRight /></Button>
         <Button variant="outline" type="button" className="w-full" disabled={locationBusy || !desktop()?.changeLocation} onClick={async () => { setLocationBusy(true); try { setLocation(await desktop()!.changeLocation!()); } catch { setError("Backup location not changed."); } finally { setLocationBusy(false); } }}>Change location…</Button>
         {!location?.connected && <Button variant="ghost" type="button" className="w-full" onClick={() => { setLocation(null); void desktop()?.getLocation?.().then(setLocation); }}>Check again</Button>}

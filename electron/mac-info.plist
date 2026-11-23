@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSRemovableVolumesUsageDescription</key>
+  <string>HomeSafe Vault saves your phone backups to the external drive you choose.</string>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>HomeSafe Vault lets your phone find it and send backups over your home Wi-Fi. Nothing leaves your network.</string>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_homesafe._tcp</string>
+  </array>
+</dict>
+</plist>
