@@ -1,0 +1,205 @@
+# HomeSafe Vault (desktop): tests + Windows and macOS packages.
+# Windows runs on every push/PR. macOS is slower and costs more on private repos,
+# so it only runs when you start it by hand ("Run workflow" -> build_macos) or push a v* tag.
+name: Desktop build
+
+on:
+  push:
+    branches: [main, prod-ready]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_macos:
+        description: "Also build the macOS app"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_COLOR: "1"
+
+jobs:
+  # Both repos must carry the byte-identical protocol/test-vectors.json. If you change it,
+  # change it in BOTH repos and update the hash below in BOTH workflows (sha256sum <file>).
+  vectors-guard:
+    name: Shared protocol vectors unchanged
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: echo "856ded0e2e2fda1f76d94a1a1715fa1a916888d79804e5c7706afb1d23a2ffa5  vault-service/protocol/test-vectors.json" | sha256sum -c -
+
+  vault-service-tests:
+    name: Vault service tests (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # Electron 33 runs the service on its embedded Node 20; standalone installs use Node 22+.
+        node: [20, 22]
+    defaults:
+      run:
+        working-directory: vault-service
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: vault-service/package-lock.json
+      - run: npm ci
+      - run: npm test
+
+  dashboard-tests:
+    name: Dashboard tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bunx vitest run
+
+  package-windows:
+    name: Package Windows (x64)
+    needs: [vectors-guard, vault-service-tests, dashboard-tests]
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build the dashboard (static desktop bundle)
+        env:
+          DESKTOP: "1"
+        run: |
+          bun install --frozen-lockfile
+          bunx vite build
+
+      - name: Put the dashboard where Electron expects it (dist/client)
+        run: |
+          if [ -f dist/client/index.html ]; then
+            echo "Using dist/client"
+          elif [ -f .output/public/index.html ]; then
+            rm -rf dist/client && mkdir -p dist && cp -R .output/public dist/client
+            echo "Copied .output/public to dist/client"
+          else
+            echo "::error::No dashboard build found (looked in dist/client and .output/public)"; exit 1
+          fi
+
+      - name: Install service and Electron dependencies
+        run: |
+          (cd vault-service && npm ci --omit=dev)
+          # electron/package-lock.json is out of step with package.json, so npm ci would fail here.
+          (cd electron && npm install --no-audit --no-fund)
+
+      - name: Package with electron-packager
+        working-directory: electron
+        run: |
+          npx electron-packager . "HomeSafe Vault" --platform=win32 --arch=x64 --out=release --overwrite \
+            --extra-resource=../vault-service --extra-resource=../dist/client --ignore=^/release
+          node rename-dashboard.cjs "release/HomeSafe Vault-win32-x64/resources"
+
+      - name: Check the package layout
+        working-directory: electron
+        run: |
+          APP="release/HomeSafe Vault-win32-x64"; R="$APP/resources"
+          test -f "$APP/HomeSafe Vault.exe"
+          test -f "$R/dashboard/index.html"
+          test -f "$R/vault-service/src/cli.mjs"
+          test -f "$R/vault-service/src/discovery.mjs"
+          test -f "$R/vault-service/src/transfer-history.mjs"
+          test -d "$R/vault-service/node_modules/ws"
+          test -d "$R/vault-service/node_modules/bonjour-service"
+          test -d "$R/app/node_modules/selfsigned"
+          echo "Package layout OK"
+
+      - name: Zip
+        working-directory: electron/release
+        run: 7z a -tzip -mx=5 HomeSafe-Vault-win-x64.zip "HomeSafe Vault-win32-x64"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homesafe-vault-windows-x64
+          path: electron/release/HomeSafe-Vault-win-x64.zip
+          retention-days: 14
+          if-no-files-found: error
+
+  package-macos:
+    name: Package macOS (Apple Silicon + Intel)
+    needs: [vectors-guard, vault-service-tests, dashboard-tests]
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.build_macos) || startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Build the dashboard (static desktop bundle)
+        env:
+          DESKTOP: "1"
+        run: |
+          bun install --frozen-lockfile
+          bunx vite build
+
+      - name: Put the dashboard where Electron expects it (dist/client)
+        run: |
+          if [ -f dist/client/index.html ]; then
+            echo "Using dist/client"
+          elif [ -f .output/public/index.html ]; then
+            rm -rf dist/client && mkdir -p dist && cp -R .output/public dist/client
+          else
+            echo "::error::No dashboard build found"; exit 1
+          fi
+
+      - name: Install service and Electron dependencies
+        run: |
+          (cd vault-service && npm ci --omit=dev)
+          (cd electron && npm install --no-audit --no-fund)
+
+      - name: Package with electron-packager
+        working-directory: electron
+        run: |
+          npx electron-packager . "HomeSafe Vault" --platform=darwin --arch=arm64,x64 --out=release --overwrite \
+            --extra-resource=../vault-service --extra-resource=../dist/client --ignore=^/release
+          for a in arm64 x64; do
+            node rename-dashboard.cjs "release/HomeSafe Vault-darwin-$a/HomeSafe Vault.app/Contents/Resources"
+          done
+
+      - name: Check the package layout
+        working-directory: electron
+        run: |
+          for a in arm64 x64; do
+            R="release/HomeSafe Vault-darwin-$a/HomeSafe Vault.app/Contents/Resources"
+            test -f "$R/dashboard/index.html"
+            test -f "$R/vault-service/src/cli.mjs"
+            test -f "$R/vault-service/src/transfer-history.mjs"
+            test -d "$R/vault-service/node_modules/bonjour-service"
+          done
+          echo "Package layout OK"
+
+      - name: Zip
+        working-directory: electron/release
+        run: |
+          for a in arm64 x64; do
+            ditto -c -k --sequesterRsrc --keepParent "HomeSafe Vault-darwin-$a/HomeSafe Vault.app" "HomeSafe-Vault-mac-$a.zip"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: homesafe-vault-macos
+          path: electron/release/HomeSafe-Vault-mac-*.zip
+          retention-days: 14
+          if-no-files-found: error
