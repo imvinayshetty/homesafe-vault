@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('vaultDesktop', {
   status: () => ipcRenderer.invoke('vault:status'),
   getLocation: () => ipcRenderer.invoke('vault:get-location'),
   changeLocation: () => ipcRenderer.invoke('vault:change-location'),
+  chooseTempFolder: () => ipcRenderer.invoke('vault:choose-temp-folder'),
 });

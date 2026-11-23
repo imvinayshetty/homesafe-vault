@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { segment } from './storage.mjs';
 import { buildLibrary } from './library.mjs';
 import { mirrorPhones, readRecovery, writeVault } from './recovery.mjs';
+import { createStaging } from './staging.mjs';
 import { createNativeProtocol, vaultError, errorCode, ERROR_MESSAGES } from './native-protocol.mjs';
 import { createTransferHistory } from './transfer-history.mjs';
 export const CODE_LIFETIME_MS = 30000;
@@ -17,7 +18,7 @@ export const DEFAULT_LAN_PORT = 7443;
 export function pairingQr({ host, port, fingerprint, code, email }) { const q = new URLSearchParams({ v: '1', host: host ?? '', port: String(port), fp: fingerprint ?? '', code, email: email ?? '' }); return `homesafe://pair?${q}`; }
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 export function validCode(pairing, code, now = Date.now()) { return Boolean(pairing && now < pairing.expiresAt && equal(pairing.code, code)); }
-const STATUS = { rate_limited: 429, transfer_active: 409, name_exists: 409, drive_unavailable: 503, no_space: 507 };
+const STATUS = { rate_limited: 429, transfer_active: 409, name_exists: 409, drive_unavailable: 503, no_space: 507, staging_space: 507 };
 export async function createVaultService(config) {
   const root = await fs.realpath(config.root); // Must already exist: never silently recreate a disconnected mount.
   const rootStat = await fs.lstat(root);
@@ -48,7 +49,7 @@ export async function createVaultService(config) {
     } catch { /* logging must never break a request */ }
   };
   const send = (ws, event) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event)); };
-  const emit = event => { if (event.type === 'transfer_progress' && history.at(-1)?.type === 'transfer_progress') history.pop(); history.push(event); for (const ws of monitors) send(ws, event); };
+  const emit = event => { if ((event.type === 'transfer_progress' || event.type === 'sync_progress') && history.at(-1)?.type === event.type) history.pop(); history.push(event); for (const ws of monitors) send(ws, event); };
   const x509 = config.tls ? new X509Certificate(config.tls.cert) : null;
   const fingerprint = x509 ? createHash('sha256').update(x509.raw).digest('hex') : null, certExpiresAt = x509 ? Date.parse(x509.validTo) : null;
   let lanPort = config.lanPort ?? DEFAULT_LAN_PORT;
@@ -62,9 +63,10 @@ export async function createVaultService(config) {
   const body = async req => { let size = 0, chunks = []; for await (const c of req) { size += c.length; if (size > 2 * 1024 * 1024) throw new Error('Request too large'); chunks.push(c); } return JSON.parse(Buffer.concat(chunks).toString()); };
   const sendHistory = ws => send(ws, { type: 'transfer_history', backups: transferHistory.list(selected) });
   const transferHistory = await createTransferHistory({ stateDir: config.stateDir, root, key, assertRoot, onChange: () => { for (const ws of monitors) sendHistory(ws); } });
-  const native = createNativeProtocol({ root, key, selected: () => selected, pairing: () => pairing, consumeCode: () => { pairing = null; }, records: () => records, saveRecords: async next => { await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); records = next; await mirrorPhones(root, next); }, emit, audit, assertRoot, validCode, history: transferHistory });
+  const staging = await createStaging({ dir: config.stagingDir ?? path.join(config.stateDir, 'staging'), stateDir: config.stateDir, freeBytes: config.stagingFreeBytes, enabled: config.staging !== false, allowSameDisk: config.stagingAnyDisk === true, root, rootStat, key, assertRoot, history: transferHistory, emit, audit, log: (route, e) => logFailure(route, e, {}) });
+  const native = createNativeProtocol({ root, key, selected: () => selected, pairing: () => pairing, consumeCode: () => { pairing = null; }, records: () => records, saveRecords: async next => { await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); records = next; await mirrorPhones(root, next); }, emit, audit, assertRoot, validCode, history: transferHistory, staging });
   const reject = (res, e) => { const code = errorCode(e); reply(res, STATUS[code] ?? 400, { error: ERROR_MESSAGES[code], code }); };
-  const ROUTES = ['/v1/pair/begin', '/v1/pair/confirm', '/v1/device/challenge', '/v1/backups', '/v1/backup/start', '/v1/backup/files', '/v1/backup/chunk', '/v1/backup/resume', '/v1/backup/baseline', '/v1/status', '/v1/backup/abort', '/v1/backup/problem', '/v1/backup/replace', '/v1/backup/finish'];
+  const ROUTES = ['/v1/pair/begin', '/v1/pair/confirm', '/v1/device/challenge', '/v1/backups', '/v1/backup/start', '/v1/backup/files', '/v1/backup/chunk', '/v1/backup/resume', '/v1/backup/baseline', '/v1/status', '/v1/backup/abort', '/v1/backup/problem', '/v1/backup/replace', '/v1/backup/finish', '/v1/speedtest/start', '/v1/speedtest/chunk', '/v1/speedtest/finish'];
   const handler = (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     // Native clients do not send Origin. Reject browser LAN calls; monitoring uses its own authenticated loopback socket.
@@ -75,7 +77,7 @@ export async function createVaultService(config) {
       if (req.method !== 'POST' || !ROUTES.includes(url.pathname)) return reject(res, vaultError('invalid_request'));
       if (url.pathname === '/v1/pair/begin') { const ip = req.socket.remoteAddress, limit = attempts.get(ip), live = limit && limit.until > Date.now(); if (live && limit.count >= 5) return reject(res, vaultError('rate_limited')); attempts.set(ip, { count: live ? limit.count + 1 : 1, until: live ? limit.until : Date.now() + 60000 }); }
       let v = {};
-      try { if (url.pathname !== '/v1/backup/chunk') v = await body(req); return reply(res, 200, await native.handle(url.pathname, v, req)); }
+      try { if (url.pathname !== '/v1/backup/chunk' && url.pathname !== '/v1/speedtest/chunk') v = await body(req); return reply(res, 200, await native.handle(url.pathname, v, req)); }
       catch (e) { await logFailure(url.pathname, e, v); if (!e.retryableManifest && !e.retryable && native.ownsRequest(url.pathname, v, req)) await native.fail(e); return reject(res, e); }
     }).catch(e => { if (!res.headersSent) reject(res, e); else res.destroy(); });
   };
@@ -99,6 +101,11 @@ export async function createVaultService(config) {
           await mirrorPhones(root, records);
           const rec = await readRecovery(root);
           send(ws, { type: 'recovery_status', phones: rec?.phones.length ?? 0, namesSaved: Boolean(rec), fullEnabled: Boolean(rec?.vault) }); return;
+        }
+        if (v.type === 'set_staging') { if (v.direct === true) await staging.useDirect(); else await staging.choose(v.path); return; }
+        if (v.type === 'disk_test') {
+          if (native.active()) throw Object.assign(new Error('A transfer is active'), { userMessage: 'Wait for the running backup to finish, then test the drive speed.' });
+          await assertRoot(); send(ws, { type: 'disk_test_result', ...(await staging.diskTest()) }); return;
         }
         if (v.type === 'cancel_transfer') { if (native.active()) await native.fail(vaultError('vault_cancelled')); return; }
         if (v.type === 'list_library') { await assertRoot(); send(ws, await buildLibrary({ root, records, email: z.string().email().max(254).parse(v.email).toLowerCase(), profile: v.profile === undefined ? undefined : segment.parse(v.profile) })); return; }
@@ -142,6 +149,7 @@ export async function createVaultService(config) {
   try { await listen(lanServer, lanPort, config.testOnly ? '127.0.0.1' : config.lanHost ?? '0.0.0.0'); } catch (e) { monitorServer.close(); throw e; }
   lanPort = lanServer.address().port;
   await mirrorPhones(root, records);
+  void staging.resumePending().catch(e => logFailure('staging-resume', e, {}));
   const timer = setInterval(() => { if (!pairing || pairing.expiresAt <= Date.now()) rotate(); if (native.expired()) void serialize(() => native.fail()); for (const [ip, a] of attempts) if (a.until <= Date.now()) attempts.delete(ip); }, 500);
-  return { monitorPort: monitorServer.address().port, lanPort, fingerprint, certExpiresAt, async close() { if (closed) return; closed = true; clearInterval(timer); for (const ws of wss.clients) ws.terminate(); await Promise.all([new Promise(r => monitorServer.close(r)), new Promise(r => lanServer.close(r))]); } };
+  return { monitorPort: monitorServer.address().port, lanPort, fingerprint, certExpiresAt, async close() { if (closed) return; closed = true; staging.stop(); clearInterval(timer); for (const ws of wss.clients) ws.terminate(); await Promise.all([new Promise(r => monitorServer.close(r)), new Promise(r => lanServer.close(r))]); } };
 }

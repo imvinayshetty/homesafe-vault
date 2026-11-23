@@ -21,7 +21,7 @@ export type DaemonEvent =
   | { type: "transfer_verifying"; checkedFiles: number; total: number }
   | { type: "transfer_failed"; reason: string };
 
-export interface TransferState { stage: 0 | 1 | 2 | 3 | 4 | 5; failed?: string; progress?: number; bytesPerSecond?: number; verifying?: { checkedFiles: number; total: number } }
+export interface TransferState { stage: 0 | 1 | 2 | 3 | 4 | 5; failed?: string; progress?: number; bytes?: number; totalBytes?: number; bytesPerSecond?: number; verifying?: { checkedFiles: number; total: number } }
 
 export function parseDaemonEvent(raw: unknown): DaemonEvent | null {
   try {
@@ -67,8 +67,26 @@ export function applyDaemonEvent(s: TransferState, e: DaemonEvent, profile: stri
       if (e.profile.toLowerCase() !== profile.toLowerCase() || e.phone.toLowerCase() !== phone.toLowerCase()) return { ...s, failed: "Paired phone does not match the confirmed profile and phone folder." };
       return { stage: 2 };
     case "transfer_started": return s.stage === 2 ? { stage: 3 } : s;
-    case "transfer_progress": return s.stage === 3 || s.stage === 4 ? { stage: 4, progress: Math.min(1, e.bytes !== undefined && e.totalBytes ? e.bytes / e.totalBytes : e.files / e.total), ...(e.bytesPerSecond !== undefined ? { bytesPerSecond: e.bytesPerSecond } : {}) } : s;
+    case "transfer_progress": return s.stage === 3 || s.stage === 4 ? { stage: 4, progress: Math.min(1, e.bytes !== undefined && e.totalBytes ? e.bytes / e.totalBytes : e.files / e.total), ...(e.bytes !== undefined && e.totalBytes ? { bytes: e.bytes, totalBytes: e.totalBytes } : {}), ...(e.bytesPerSecond !== undefined ? { bytesPerSecond: e.bytesPerSecond } : {}) } : s;
     case "transfer_completed": return s.stage === 4 ? { stage: 5, progress: 1 } : s;
     case "transfer_verifying": return s.stage === 4 ? { ...s, verifying: { checkedFiles: e.checkedFiles, total: e.total } } : s;
+  }
+}
+
+/**
+ * After the phone is done, the Vault may still be copying the files from this computer to the backup drive.
+ * These events arrive on their own and can come after the transfer screen has been closed.
+ */
+export interface SyncState { phase: "saving" | "waiting" | "verifying" | "done" | "failed"; bytes?: number; totalBytes?: number; bytesPerSecond?: number; reason?: string }
+export function parseSyncEvent(v: unknown): SyncState | null {
+  if (!v || typeof v !== "object") return null;
+  const m = v as { type?: unknown; bytes?: unknown; totalBytes?: unknown; bytesPerSecond?: unknown; reason?: unknown }, num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) && x >= 0 ? x : undefined);
+  switch (m.type) {
+    case "sync_progress": { const bytes = num(m.bytes), totalBytes = num(m.totalBytes), bps = num(m.bytesPerSecond); return { phase: "saving", ...(bytes !== undefined ? { bytes } : {}), ...(totalBytes !== undefined ? { totalBytes } : {}), ...(bps !== undefined ? { bytesPerSecond: bps } : {}) }; }
+    case "sync_waiting": return { phase: "waiting" };
+    case "sync_verifying": return { phase: "verifying" };
+    case "sync_completed": return { phase: "done" };
+    case "sync_failed": return { phase: "failed", reason: typeof m.reason === "string" ? m.reason.slice(0, 200) : "Could not finish saving to the drive." };
+    default: return null;
   }
 }

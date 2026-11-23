@@ -2,6 +2,7 @@ import { promises as fs, constants } from 'node:fs';
 import path from 'node:path';
 import { createPublicKey, verify, createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
+import { discardStaged } from './staging.mjs';
 import { segment, filePath, directory, verifyIdentity, enrollIdentity, adoptOrphanIdentity, discardPartial, createTransfer, finishTransfer, writeManifest } from './storage.mjs';
 export const MANIFEST_PAGE_LIMIT = 5000, MANIFEST_TOTAL_LIMIT = 500000;
 /** Stable, personal-data-free error codes for phone clients. */
@@ -17,6 +18,7 @@ export const ERROR_MESSAGES = {
   rate_limited: 'Too many attempts; wait one minute.',
   invalid_request: 'Request rejected; check the signature and request fields.',
   phone_stopped: 'The phone stopped the backup.',
+  staging_space: 'Your computer needs room to receive this backup first. Open HomeSafe Vault on the computer and choose a HomeSafeTemp folder (or save straight to the drive), then try again.',
   vault_cancelled: 'The backup was cancelled on the Vault.',
   transfer_stopped: 'The Vault has stopped this backup.',
   integrity_mismatch: 'Backup verification found files that do not match the transferred data.',
@@ -46,8 +48,8 @@ export const speedOf = (t, now = Date.now()) => { const s = (t.samples ??= []); 
 export const TRANSFER_IDLE_MS = 20 * 60 * 1000;
 const BASELINE_PAGE = 5000, BASELINE_TTL_MS = 10 * 60 * 1000;
 const notBefore = (e, retryable) => Object.assign(e instanceof Error ? e : new Error(String(e)), { retryable });
-export function createNativeProtocol({ root, key, selected, pairing, consumeCode, records, saveRecords, emit, audit, assertRoot, validCode, history }) {
- const pending = new Map(), challenges = new Map(), baselines = new Map(); let transfer = null;
+export function createNativeProtocol({ root, key, selected, pairing, consumeCode, records, saveRecords, emit, audit, assertRoot, validCode, history, staging = null }) {
+ const pending = new Map(), challenges = new Map(), baselines = new Map(), speedTests = new Map(); let transfer = null;
  const random = () => randomBytes(32).toString('base64url');
  const identity = r => ({ profile: r.profile, phone: r.phone, publicKey: r.publicKey });
  const device = id => { const all = records().filter(r => r.deviceId === id), r = all.find(r => !r.revoked), s = selected(); if (!r) throw vaultError(all.length ? 'phone_revoked' : 'wrong_account'); if (!s || r.profile !== s.profile || r.phone !== s.phone || r.email !== s.email) throw vaultError('wrong_account'); return r; };
@@ -118,8 +120,11 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     if (!Number.isSafeInteger(totalBytes) || totalBytes < 0 || (!paged && totalBytes !== pageBytes)) throw vaultError('invalid_request');
     const r = proof(v, 'backup', { name: v.name, kind: v.kind, files: totalFiles, bytes: totalBytes });
     if (transfer && !transfer.failed && !transfer.finished) throw vaultError('transfer_active'); await assertRoot();
+    // Decided before anything is created on the drive, so a refused start leaves no empty backup folder behind.
+    const stagePlan = staging ? await staging.plan(totalBytes) : null;
     const t = await createTransfer(root, key, identity(r), { kind: v.kind, name: v.name, ...(v.basedOn !== undefined ? { basedOn: v.basedOn } : {}), declaredBytes: totalBytes, paged, files: page.map(f => ({ ...f, sha256: '0'.repeat(64) })) });
     transfer = { ...t, id: random(), token: random(), deviceId: r.deviceId, identity: identity(r), totalFiles, totalBytes, receivedBytes: 0, seen: new Set(t.files.map(f => f.path.toLowerCase())), offsets: new Map(), hashes: new Map(), failed: false, lastActivity: Date.now() };
+    if (stagePlan) transfer.stage = await staging.begin(stagePlan, transfer.id);
     await history.start(transfer, { email: r.email, profile: r.profile, phone: r.phone });
     emit({ type: 'phone_connecting' }); emit({ type: 'pairing_verified', profile: r.profile, phone: r.phone }); emit({ type: 'transfer_started' }); emit({ type: 'transfer_progress', files: 0, total: totalFiles }); await audit('transfer_started');
     return { transferId: transfer.id, token: transfer.token, manifestComplete: !paged };
@@ -145,10 +150,10 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     if (!Number.isInteger(index) || !Number.isInteger(offset) || !entry || t.completed.has(index) || offset !== (t.offsets.get(index) ?? 0)) throw notBefore(new Error('Invalid offset'), true);
     let bytes = 0, chunks = []; try { for await (const c of req) { bytes += c.length; if (bytes > 4194304 || offset + bytes > entry.bytes) throw new Error('Chunk too large'); chunks.push(c); } } catch (e) { throw e.message === 'Chunk too large' ? e : notBefore(e, true); } // a dropped connection writes nothing, so the phone may retry
     const data = Buffer.concat(chunks); if (createHash('sha256').update(data).digest('hex') !== h['x-sha256']) throw notBefore(new Error('Chunk digest mismatch'), true);
-    await assertRoot(); const parts = entry.path.split('/'), dirKey = parts.slice(0,-1).join('/').toLowerCase();
+    if (!t.stage) await assertRoot(); const parts = entry.path.split('/'), dirKey = parts.slice(0,-1).join('/').toLowerCase();
     // Resolve the phone folder and each sub-folder once per transfer; re-reading them for every 4 MiB chunk was a large share of the time on drives with big folders.
     t.dirs ??= new Map(); let parent = t.dirs.get(dirKey);
-    if (!parent) { let cur = t.baseDir ??= await directory(await verifyIdentity(root, key, t.identity), t.name); for (const p of parts.slice(0,-1)) cur = await directory(cur,p,true,true); parent = cur; t.dirs.set(dirKey, parent); }
+    if (!parent) { let cur = t.baseDir ??= (t.stage ?? await directory(await verifyIdentity(root, key, t.identity), t.name)); for (const p of parts.slice(0,-1)) cur = await directory(cur,p,true,true); parent = cur; t.dirs.set(dirKey, parent); }
     const target = path.join(parent, parts.at(-1));
     const handle = await fs.open(target, constants.O_WRONLY | constants.O_NOFOLLOW | (offset === 0 ? constants.O_CREAT | constants.O_EXCL : 0), 0o600);
     try { if ((await handle.stat()).size !== offset) throw new Error('File offset changed'); let written=0; while(written<data.length) {const result=await handle.write(data,written,data.length-written,offset+written);written+=result.bytesWritten;} if (offset+bytes === entry.bytes || (t.unsynced = (t.unsynced ?? 0) + bytes) >= SYNC_EVERY_BYTES) { await handle.sync(); t.unsynced = 0; } } finally { await handle.close(); }
@@ -191,6 +196,23 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     const page = b.entries.slice(offset, offset + BASELINE_PAGE), next = offset + page.length < b.entries.length ? offset + page.length : null;
     return { found: true, token: v.token, name: b.name, date: `20${b.date.slice(4, 6)}-${b.date.slice(2, 4)}-${b.date.slice(0, 2)}`, files: b.files, bytes: b.bytes, entries: page, next };
    }
+   if (route === '/v1/speedtest/start') {
+    // A short, signed test: the phone sends data that is thrown away, then the Vault measures how fast the drive and the staging folder write.
+    const r = proof(v, 'speedtest'); for (const [k, x] of speedTests) if (x.expiresAt <= Date.now()) speedTests.delete(k);
+    if (transfer && !transfer.failed && !transfer.finished) throw vaultError('transfer_active');
+    const token = random(); speedTests.set(token, { deviceId: r.deviceId, expiresAt: Date.now() + 120000, bytes: 0, first: 0, last: 0 }); return { token };
+   }
+   if (route === '/v1/speedtest/chunk') {
+    const x = speedTests.get(req.headers['x-speedtest-token']); if (!x || x.expiresAt <= Date.now()) throw vaultError('code_expired');
+    let bytes = 0; for await (const c of req) { bytes += c.length; if (bytes > 4194304) throw vaultError('invalid_request'); }
+    const now = Date.now(); if (!x.first) x.first = now; x.last = now; x.bytes += bytes; return { received: bytes };
+   }
+   if (route === '/v1/speedtest/finish') {
+    const x = speedTests.get(v.token); speedTests.delete(v.token); if (!x || x.deviceId === undefined) throw vaultError('code_expired');
+    if (transfer && !transfer.failed && !transfer.finished) throw vaultError('transfer_active');
+    await assertRoot(); const disk = staging ? await staging.diskTest() : { driveBytesPerSecond: null, stagingBytesPerSecond: null, staging: false };
+    return { ...disk };
+   }
    if (route === '/v1/status') {
     // Which drive this Vault saves to and how much room is left. Drive name and sizes only: no folder path, no profile or phone names.
     const parent = path.dirname(root); let connected = true; try { await assertRoot(); } catch { connected = false; }
@@ -206,7 +228,7 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     const t = authorizedTransfer(v); requireManifest(t); const index = z.number().int().min(0).parse(v.index), entry = t.files[index];
     if (!entry || t.completed.has(index)) throw vaultError('invalid_request');
     const reason = z.string().max(200).parse(v.reason ?? 'Could not be copied');
-    await assertRoot(); await discardPartial(root, key, t.identity, t, entry);
+    if (t.stage) await discardStaged(t.stage, entry); else { await assertRoot(); await discardPartial(root, key, t.identity, t, entry); }
     t.receivedBytes -= t.offsets.get(index) ?? 0; t.offsets.delete(index); t.hashes.delete(index);
     (t.problems ??= new Map()).set(index, { path: entry.path, reason }); t.lastActivity = Date.now();
     emit({ type: 'transfer_progress', files: t.completed.size, total: t.totalFiles, bytes: t.receivedBytes, totalBytes: t.totalBytes, bytesPerSecond: speedOf(t) });
@@ -225,7 +247,7 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     return { receivedBytes: t.receivedBytes, totalBytes: t.totalBytes };
    }
    if (route === '/v1/backup/finish') {
-    const t = authorizedTransfer(v); requireManifest(t); await assertRoot();
+    const t = authorizedTransfer(v); requireManifest(t); if (!t.stage) await assertRoot();
     if (t.problems?.size) {
      // Files the owner chose to skip are left out of this backup and listed in its manifest.
      t.skipped = [...(t.skipped ?? []), ...t.problems.values()];
@@ -236,6 +258,13 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
      t.bytes -= drop.reduce((n, f) => n + f.bytes, 0); t.totalBytes = t.bytes; t.totalFiles = t.files.length; t.problems = new Map(); t.offsets = new Map(); t.hashes = new Map();
     }
     if (t.completed.size !== t.totalFiles) throw vaultError('invalid_request');
+    if (t.stage) {
+     // Every file is on this computer: the phone is done. Saving to the drive carries on in the background.
+     await history.update(t.id, { status: 'saving', totalFiles: t.totalFiles, totalBytes: t.bytes, receivedFiles: 0, receivedBytes: 0, integrity: { status: 'pending', checkedFiles: 0, mismatchCount: 0, issues: [] } });
+     await staging.enqueue({ id: t.id, jobDir: path.dirname(t.stage), identity: t.identity, name: t.name, date: t.date, kind: t.kind, ...(t.basedOn ? { basedOn: t.basedOn } : {}), ...(t.skipped?.length ? { skipped: t.skipped } : {}), files: t.files, bytes: t.bytes, createdAt: t.createdAt });
+     t.finished = true; emit({ type: 'transfer_completed' }); await audit('transfer_staged');
+     return { state: 'complete', sentBytes: t.bytes, totalBytes: t.bytes, staged: true };
+    }
     await writeManifest(t, false);
     await history.update(t.id, { status: 'verifying', integrity: { status: 'checking', checkedFiles: 0, mismatchCount: 0, issues: [] } });
     emit({ type: 'transfer_verifying', checkedFiles: 0, total: t.totalFiles });

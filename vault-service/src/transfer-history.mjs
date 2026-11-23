@@ -7,7 +7,7 @@ export const HISTORY_LIMIT = 100;
 const count = z.number().int().nonnegative().safe();
 const issue = z.object({ path: filePath, reason: z.enum(['missing', 'size', 'checksum', 'unreadable']), expectedBytes: count, actualBytes: count.optional() });
 const report = z.object({ status: z.enum(['pending', 'checking', 'verified', 'mismatch', 'unreadable']), checkedFiles: count, mismatchCount: count, issues: z.array(issue).max(50), checkedAt: z.string().optional() });
-const record = z.object({ id: z.string(), email: z.string(), profile: segment, phone: segment, name: segment, kind: z.enum(['Full', 'Custom']), startedAt: z.string(), updatedAt: z.string(), completedAt: z.string().optional(), status: z.enum(['receiving_manifest', 'transferring', 'verifying', 'completed', 'failed', 'interrupted']), manifestReceived: count, totalFiles: count, receivedFiles: count, receivedBytes: count, totalBytes: count, failureCode: z.string().optional(), failureReason: z.string().optional(), integrity: report });
+const record = z.object({ id: z.string(), email: z.string(), profile: segment, phone: segment, name: segment, kind: z.enum(['Full', 'Custom']), startedAt: z.string(), updatedAt: z.string(), completedAt: z.string().optional(), status: z.enum(['receiving_manifest', 'transferring', 'saving', 'verifying', 'completed', 'failed', 'interrupted']), manifestReceived: count, totalFiles: count, receivedFiles: count, receivedBytes: count, totalBytes: count, failureCode: z.string().optional(), failureReason: z.string().optional(), integrity: report });
 
 /** Owner-only local metadata; no tokens or pairing codes and never cloud analytics. */
 export async function createTransferHistory({ stateDir, root, key, assertRoot, onChange }) {

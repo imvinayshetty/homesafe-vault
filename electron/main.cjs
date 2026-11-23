@@ -192,6 +192,14 @@ async function boot() {
   ipcMain.handle('vault:status', () => ({ running: !!service, error: service ? '' : lastError, location: config?.root ?? null }));
   ipcMain.handle('vault:get-location', async ev => { if (originOf(ev.senderFrame.url) !== ORIGIN) throw new Error('Untrusted page'); return locationInfo(); });
   ipcMain.handle('vault:change-location', async ev => { if (originOf(ev.senderFrame.url) !== ORIGIN) throw new Error('Untrusted page'); await changeLocation(); return locationInfo(); });
+  // The owner picks a drive or folder; a folder named HomeSafeTemp is created there if needed. The Vault service checks it and the room it has.
+  ipcMain.handle('vault:choose-temp-folder', async ev => {
+    if (originOf(ev.senderFrame.url) !== ORIGIN) throw new Error('Untrusted page');
+    const pick = await dialog.showOpenDialog(win, { title: 'Choose a drive or folder for HomeSafeTemp (it will be created there)', properties: ['openDirectory', 'createDirectory'] });
+    if (pick.canceled || !pick.filePaths[0]) return null;
+    const picked = pick.filePaths[0], target = path.basename(picked) === 'HomeSafeTemp' ? picked : path.join(picked, 'HomeSafeTemp');
+    await fsp.mkdir(target, { recursive: true }); return target;
+  });
   ipcMain.handle('vault:ensure-running', () => { if (!service) { restarts = 0; ensureRunning(); } return { running: !!service, error: service ? '' : lastError }; });
   win = new BrowserWindow({ width: 1280, height: 860, title: 'HomeSafe Vault', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
   win.webContents.on('will-navigate', (e, url) => { if (originOf(url) !== ORIGIN) e.preventDefault(); });

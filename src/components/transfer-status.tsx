@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AlertTriangle, Loader2, Smartphone, Wifi } from "lucide-react";
-import { DAEMON_URL, MINTED_PAIRING_CODE_LIFETIME_MS, applyDaemonEvent, parseDaemonEvent, type PairingCode, type TransferState } from "@/lib/vault-daemon";
+import { DAEMON_URL, MINTED_PAIRING_CODE_LIFETIME_MS, applyDaemonEvent, parseDaemonEvent, parseSyncEvent, type PairingCode, type SyncState, type TransferState } from "@/lib/vault-daemon";
+import { createEtaEstimator } from "@/lib/eta";
+import { SyncBanner } from "@/components/sync-banner";
+import { StagingPrompt, type StagingNeed } from "@/components/staging-prompt";
 import { VaultPairingCode } from "@/components/vault-pairing-code";
 import { Button } from "@/components/ui/button";
 import { TransferHistory } from "@/components/transfer-history";
@@ -21,6 +24,9 @@ export function TransferStatus({ profile, phone, email = "", accessKey = "" }: {
   const [serviceError, setServiceError] = useState("");
   const [backups, setBackups] = useState<TransferRecord[] | null>(null);
   const [showHistory, setShowHistory] = useState(false);
+  const [sync, setSync] = useState<SyncState | null>(null);
+  const [stagingNeed, setStagingNeed] = useState<StagingNeed | null>(null);
+  const [disk, setDisk] = useState<{ drive: number; staging: number | null; busy?: false } | "testing" | null>(null);
   useEffect(() => {
     setPairing(null);
     setBackups(null); setShowHistory(false);
@@ -35,7 +41,11 @@ export function TransferStatus({ profile, phone, email = "", accessKey = "" }: {
         try {
           const message = JSON.parse(String(m.data));
           if (message.type === "service_ready") { setService("online"); ws?.send(JSON.stringify({ type: "select_destination", profile, phone, email })); return; }
-          if (message.type === "service_error") { setServiceError(String(message.reason)); return; }
+          if (message.type === "service_error") { setServiceError(String(message.reason)); setDisk(d => d === "testing" ? null : d); return; }
+          if (message.type === "disk_test_result") { setDisk(typeof message.driveBytesPerSecond === "number" ? { drive: message.driveBytesPerSecond, staging: typeof message.stagingBytesPerSecond === "number" ? message.stagingBytesPerSecond : null } : null); return; }
+          if (message.type === "staging_needed" && Number.isFinite(message.needBytes) && Number.isFinite(message.freeBytes)) { setStagingNeed({ needBytes: message.needBytes, freeBytes: message.freeBytes }); return; }
+          if (message.type === "staging_ready") { setStagingNeed(null); setServiceError(""); return; }
+          { const syncEvent = parseSyncEvent(message); if (syncEvent) { setSync(syncEvent); return; } }
           if (message.type === "transfer_history") { const rows = parseTransferHistory(message); if (rows) setBackups(rows.filter(r => r.profile === profile && r.phone === phone)); return; }
         } catch { return; }
         const e = parseDaemonEvent(m.data); if (!e) return;
@@ -55,10 +65,11 @@ export function TransferStatus({ profile, phone, email = "", accessKey = "" }: {
     return () => { stopped = true; clearTimeout(retry); ws?.close(); };
   }, [profile, phone, email, accessKey]);
   const historyPanel = <TransferHistory backups={backups} online={service === "online"} onVerify={id => { setServiceError(""); socketRef.current?.send(JSON.stringify({ type: "verify_backup", id })); }} />;
+  const chooseTemp = (window as unknown as { vaultDesktop?: { chooseTempFolder?: () => Promise<string | null> } }).vaultDesktop?.chooseTempFolder ? () => { void (window as unknown as { vaultDesktop: { chooseTempFolder: () => Promise<string | null> } }).vaultDesktop.chooseTempFolder().then(p => { if (p) socketRef.current?.send(JSON.stringify({ type: "set_staging", path: p })); }); } : undefined;
   const errors = serviceError && <p role="alert" className="text-sm text-destructive">{serviceError}</p>;
-  if (state.stage === 0 && !state.failed) return <><AwaitingCard service={service} profile={profile} phone={phone} pairing={pairing} onMint={service === "online" ? () => socketRef.current?.send(JSON.stringify({ type: "mint_pairing" })) : undefined} />{errors}{historyPanel}</>;
+  if (state.stage === 0 && !state.failed) return <><AwaitingCard service={service} profile={profile} phone={phone} pairing={pairing} onMint={service === "online" ? () => socketRef.current?.send(JSON.stringify({ type: "mint_pairing" })) : undefined} />{errors}<StagingPrompt need={stagingNeed} onChoose={chooseTemp} onDirect={() => socketRef.current?.send(JSON.stringify({ type: "set_staging", direct: true }))} /><SyncBanner sync={sync} /><DiskTest disk={disk} onTest={() => { setDisk("testing"); setServiceError(""); socketRef.current?.send(JSON.stringify({ type: "disk_test" })); }} />{historyPanel}</>;
   if (showHistory) return <><div className="flex flex-wrap items-center justify-between gap-2"><p role="status" className={`text-sm ${state.failed ? "text-destructive" : "text-primary"}`}>{state.failed ? state.failed : state.verifying ? "Checking backup integrity" : transferSteps(profile, phone)[state.stage]}</p><Button variant="outline" onClick={() => setShowHistory(false)}>Open transfer</Button></div>{errors}{historyPanel}</>;
-  return <TransferScreen state={state} profile={profile} phone={phone} service={service} onCancel={() => socketRef.current?.send(JSON.stringify({ type: "cancel_transfer" }))} onViewHistory={() => setShowHistory(true)} onClose={state.failed || state.stage === 5 ? () => { socketRef.current?.send(JSON.stringify({ type: "reset" })); stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
+  return <TransferScreen state={state} profile={profile} phone={phone} service={service} sync={sync} onCancel={() => socketRef.current?.send(JSON.stringify({ type: "cancel_transfer" }))} onViewHistory={() => setShowHistory(true)} onClose={state.failed || state.stage === 5 ? () => { socketRef.current?.send(JSON.stringify({ type: "reset" })); stateRef.current = { stage: 0 }; setState({ stage: 0 }); } : undefined} />;
 }
 
 type Service = "checking" | "online" | "offline";
@@ -85,11 +96,13 @@ export function AwaitingCard({ service, profile, phone, sample, action, pairing,
 }
 
 /** Full-screen payment-style transfer animation, from Establishing connection onwards. */
-export function TransferScreen({ state, profile, phone, service, onClose, onViewHistory, onCancel, sample }: { state: TransferState; profile: string; phone: string; service: Service; onClose?: (() => void) | undefined; onViewHistory?: () => void; onCancel?: () => void; sample?: boolean }) {
+export function TransferScreen({ state, profile, phone, service, onClose, onViewHistory, onCancel, sync, sample }: { sync?: SyncState | null; state: TransferState; profile: string; phone: string; service: Service; onClose?: (() => void) | undefined; onViewHistory?: () => void; onCancel?: () => void; sample?: boolean }) {
   const { stage, failed, progress } = state;
   const speed = state.bytesPerSecond !== undefined ? `${(state.bytesPerSecond / 1048576).toFixed(1)} MB/s` : "";
   const steps = transferSteps(profile, phone);
   const pct = Math.round((progress ?? 0) * 100);
+  const etaRef = useRef(createEtaEstimator());
+  const left = stage === 4 && state.bytes !== undefined && state.totalBytes ? etaRef.current.update(state.bytes, state.totalBytes, state.bytesPerSecond) : null;
   const done = stage === 5 && !failed;
   const verifiedOnly = stage === 2 && !failed;
   const subtitle = failed ? `Backup stopped: ${failed}`
@@ -98,8 +111,8 @@ export function TransferScreen({ state, profile, phone, service, onClose, onView
     : stage === 1 ? "Securing a private link over your home Wi-Fi"
     : stage === 2 ? "Phone identity confirmed · choose Full or Custom backup on your phone"
     : stage === 3 ? "Preparing the phone folder on your drive"
-    : stage === 4 ? `${pct}% copied to ${ROOTLESS(profile, phone)}${speed ? ` · ${speed}` : ""}`
-    : "Every file is saved on your local drive";
+    : stage === 4 ? `${pct}% copied to ${ROOTLESS(profile, phone)}${speed ? ` · ${speed}` : ""}${left ? ` · ${left} left` : ""}`
+    : sync && sync.phase !== "done" && sync.phase !== "failed" ? "Every file has reached this computer · now saving to your drive" : "Every file is saved on your local drive";
   const R = 88, C = 2 * Math.PI * R;
   const ring = stage === 4 ? pct / 100 : stage >= 5 ? 1 : stage === 3 ? 0.08 : 0;
   if (typeof document === "undefined") return null;
@@ -141,3 +154,11 @@ export function TransferScreen({ state, profile, phone, service, onClose, onView
   , document.body);
 }
 function ROOTLESS(profile: string, phone: string) { return `${profile}/${phone}`; }
+
+function DiskTest({ disk, onTest }: { disk: { drive: number; staging: number | null } | "testing" | null; onTest: () => void }) {
+  const mb = (n: number) => `${(n / 1048576).toFixed(1)} MB/s`;
+  return <div className="mt-3 flex flex-wrap items-center gap-3 text-sm">
+    <Button variant="outline" size="sm" disabled={disk === "testing"} onClick={onTest}>{disk === "testing" ? "Testing…" : "Test drive speed"}</Button>
+    {disk && disk !== "testing" && <span role="status" className="text-muted-foreground">Backup drive writes at {mb(disk.drive)}{disk.staging !== null ? ` · this computer's disk ${mb(disk.staging)}` : ""}.{disk.drive < 10 * 1048576 ? " The drive is slow; backups are saved here first so your phone is not kept waiting." : ""}</span>}
+  </div>;
+}
