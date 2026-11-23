@@ -45,6 +45,8 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
   nativeSignature(r.publicKey, v.signature, { deviceId: v.deviceId, challenge: v.challenge, action, ...extra }); return r;
  };
  const authorizedTransfer = v => { if (!transfer || transfer.failed || transfer.id !== v.transferId || transfer.token !== v.token) throw vaultError('invalid_request'); device(transfer.deviceId); return transfer; };
+ // Incomplete manifests reject data/completion before any write without poisoning the transfer.
+ const requireManifest = t => { if (t.files.length !== t.totalFiles || t.bytes !== t.totalBytes) throw Object.assign(vaultError('too_many_files'), { retryableManifest: true }); };
  return {
   ownsRequest(route,v,req) { return Boolean(transfer && !transfer.failed && !transfer.finished && (route === '/v1/backup/chunk' ? req.headers['x-transfer-id'] === transfer.id && req.headers['x-transfer-token'] === transfer.token : route === '/v1/backup/finish' && v.transferId === transfer.id && v.token === transfer.token)); },
   active: () => Boolean(transfer && !transfer.failed && !transfer.finished),
@@ -110,7 +112,7 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
    }
    if (route === '/v1/backup/chunk') {
     const h = req.headers, t = authorizedTransfer({ transferId: h['x-transfer-id'], token: h['x-transfer-token'] }), index = Number(h['x-file-index']), offset = Number(h['x-offset']), entry = t.files[index];
-    if (t.files.length !== t.totalFiles || t.bytes !== t.totalBytes) throw vaultError('too_many_files');
+    requireManifest(t);
     if (!Number.isInteger(index) || !Number.isInteger(offset) || !entry || t.completed.has(index) || offset !== (t.offsets.get(index) ?? 0)) throw new Error('Invalid offset');
     let bytes = 0, chunks = []; for await (const c of req) { bytes += c.length; if (bytes > 4194304 || offset + bytes > entry.bytes) throw new Error('Chunk too large'); chunks.push(c); }
     const data = Buffer.concat(chunks); if (createHash('sha256').update(data).digest('hex') !== h['x-sha256']) throw new Error('Chunk digest mismatch');
@@ -122,7 +124,7 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     if (offset+bytes === entry.bytes) { entry.sha256=hash.digest('hex'); t.completed.add(index); emit({ type: 'transfer_progress', files: t.completed.size, total: t.totalFiles }); }
     return { received: offset+bytes };
    }
-   if (route === '/v1/backup/finish') { const t = authorizedTransfer(v); await assertRoot(); await finishTransfer(root,key,t.identity,t); t.finished=true; emit({ type:'transfer_completed' }); await audit('transfer_completed'); return { state:'complete',sentBytes:t.bytes,totalBytes:t.bytes }; }
+   if (route === '/v1/backup/finish') { const t = authorizedTransfer(v); requireManifest(t); await assertRoot(); await finishTransfer(root,key,t.identity,t); t.finished=true; emit({ type:'transfer_completed' }); await audit('transfer_completed'); return { state:'complete',sentBytes:t.bytes,totalBytes:t.bytes }; }
    throw vaultError('invalid_request');
   },
   async fail() { if (transfer) transfer.failed=true; emit({type:'transfer_failed',reason:'Phone transfer failed. Check Wi-Fi and the connected drive.'}); await audit('failure','transfer'); },

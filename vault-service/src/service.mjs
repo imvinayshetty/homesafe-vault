@@ -61,7 +61,7 @@ export async function createVaultService(config) {
       if (url.pathname === '/v1/pair/begin') { const ip = req.socket.remoteAddress, limit = attempts.get(ip), live = limit && limit.until > Date.now(); if (live && limit.count >= 5) return reject(res, vaultError('rate_limited')); attempts.set(ip, { count: live ? limit.count + 1 : 1, until: live ? limit.until : Date.now() + 60000 }); }
       let v = {};
       try { if (url.pathname !== '/v1/backup/chunk') v = await body(req); return reply(res, 200, await native.handle(url.pathname, v, req)); }
-      catch (e) { if (native.ownsRequest(url.pathname, v, req)) await native.fail(); return reject(res, e); }
+      catch (e) { if (!e.retryableManifest && native.ownsRequest(url.pathname, v, req)) await native.fail(); return reject(res, e); }
     }).catch(e => { if (!res.headersSent) reject(res, e); else res.destroy(); });
   };
   const monitorServer = http.createServer((req, res) => { if (req.url === '/v1/ready' && !req.headers.origin) { void assertRoot().then(() => reply(res,200,{service:'homesafe-vault',instanceId:config.instanceId,driveReady:true})).catch(() => reply(res,503,{driveReady:false})); } else reply(res,404,{error:'Use the authenticated monitor socket'}); });

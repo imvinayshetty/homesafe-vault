@@ -101,12 +101,16 @@ Ed25519; `publicKey` is the raw 32-byte key, base64. The signed bytes are **cano
 | `/v1/pair/confirm` | `requestId, signature` | `requestId, challenge, profile, phone` | `connected, email, profile, phone` |
 | `/v1/device/challenge` | `deviceId` | — | `challenge, expiresAt` (30 s, single use) |
 | `/v1/backups` | `deviceId, challenge, signature` | `deviceId, challenge, action:"catalog"` | `backups[]` |
-| `/v1/backup/start` | `deviceId, challenge, name, kind, files[≤5000], totalFiles?, totalBytes?, signature` | `deviceId, challenge, action:"backup", name, kind, files:<totalFiles>, bytes:<totalBytes>` | `transferId, token, manifestComplete` |
-| `/v1/backup/files` | `transferId, token, files[≤5000]` | — (transfer token) | `received, manifestComplete` |
+| `/v1/backup/start` | `deviceId, challenge, name, kind, files[≤5000], fileCount?, bytes?, signature` | `deviceId, challenge, action:"backup", name, kind, files:<file count>, bytes:<total bytes>` | `transferId, token, manifestComplete` |
+| `/v1/backup/files` | `transferId, token, offset, files[≤5000]` | — (transfer token) | `received, manifestComplete` |
 | `/v1/backup/chunk` | raw body ≤4 MiB; headers `X-Transfer-Id, X-Transfer-Token, X-File-Index, X-Offset, X-Sha256` | — | `received` |
 | `/v1/backup/finish` | `transferId, token` | — | `state:"complete", sentBytes, totalBytes` |
 
-`files` entries are `{path, bytes}`. Manifest paging: send further pages with `/v1/backup/files` **before the first chunk**; chunks are refused until the manifest is complete. Limits: 5,000 entries and 2 MiB per request, 500,000 files per backup. Chunks must arrive at the exact next offset with a matching SHA-256; existing files and backups are never overwritten. Names default to `Full_Bckup_DDMMYY` / `Custom_Bckup_DDMMYY` (Vault's local date); same-date backups need a unique suffix. `/v1/pair/begin` is limited to five attempts per IP per minute. Requests with an `Origin` header are rejected. `GET /v1/info` returns `{name, version:1}`.
+`files` entries are `{path, bytes}`. Start an inline backup with a non-empty `files` array and no `fileCount` (optional `bytes` must equal its sum). For a paged backup send `files: []`, integer `fileCount` from 1 to 500,000, and `bytes` equal to the signed total; the response has `manifestComplete: false`. The signature still uses the field names `files` (the total count) and `bytes`, not `fileCount`.
+
+Send pages to `/v1/backup/files` as `{transferId, token, offset, files}` **before the first chunk**. The token must match the active transfer; `offset` must equal the number of entries already accepted (starting at 0). Gaps, repeats, case-insensitive duplicate paths, invalid paths/sizes, and entries beyond `fileCount` are rejected without adding the page. Each page is at most 5,000 entries and each JSON request is at most 2 MiB. The final page's byte sum must exactly equal the signed `bytes`; exceeding it at any point is rejected. Responses are `{received, manifestComplete}`.
+
+Chunks and finish are refused with `too_many_files` until all declared entries are accepted and their sizes match the signed total. This preflight rejection writes no payload, does not mark a backup complete, and leaves the transfer available for valid pages and retry. Other chunk/write failures still fail the transfer. Chunks must arrive at the exact next byte offset with a matching SHA-256; existing files and backups are never overwritten. Names default to `Full_Bckup_DDMMYY` / `Custom_Bckup_DDMMYY` (Vault's local date); same-date backups need a unique suffix. `/v1/pair/begin` is limited to five attempts per IP per minute. Requests with an `Origin` header are rejected. `GET /v1/info` returns `{name, version:1}`.
 
 ### Errors
 Every failure returns `{ "error": "<fixed message>", "code": "<code>" }`. Messages never contain file names, emails, profile or phone names.
@@ -120,7 +124,7 @@ Every failure returns `{ "error": "<fixed message>", "code": "<code>" }`. Messag
 | `name_exists` | 409 | a backup with this name (or same date without suffix) exists |
 | `no_space` | 507 | not enough free space for the declared total bytes |
 | `transfer_active` | 409 | another backup is in progress |
-| `too_many_files` | 400 | page over 5,000 or backup over 500,000 files |
+| `too_many_files` | 400 | page over 5,000, backup over 500,000 files, or chunk/finish before the complete size-matched manifest |
 | `rate_limited` | 429 | too many pairing attempts |
 | `invalid_request` | 400 | bad signature, field, offset, digest or unknown route |
 

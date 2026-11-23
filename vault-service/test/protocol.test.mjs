@@ -59,6 +59,12 @@ test('paged manifest: files [] with fileCount, offset-ordered pages, chunks only
     const name = 'Full_Bckup_' + today(), s = await pagedStart(h, name, 2, 6);
     assert.equal(s.manifestComplete, false);
     const early = await sendChunk(h, s, 0, 'one'); assert.equal(early.status, 400); assert.equal((await early.json()).code, 'too_many_files');
+    const earlyFinish = await h.call('/v1/backup/finish', { transferId: s.transferId, token: s.token });
+    assert.equal(earlyFinish.body.code, 'too_many_files');
+    const destination = path.join(h.root, 'Owner', 'Pixel', name);
+    assert.deepEqual(await fs.readdir(destination), ['.homesafe-backup.json']);
+    assert.equal(JSON.parse(await fs.readFile(path.join(destination, '.homesafe-backup.json'), 'utf8')).complete, false);
+    assert.equal((await h.call('/v1/backup/files', { transferId: s.transferId, token: 'wrong-token', offset: 0, files: [{ path: 'one.txt', bytes: 3 }] })).status, 400);
     assert.deepEqual((await page(h, s, 0, [{ path: 'one.txt', bytes: 3 }])).body, { received: 1, manifestComplete: false });
     assert.equal((await page(h, s, 1, [{ path: 'ONE.txt', bytes: 3 }])).status, 400);
     assert.deepEqual((await page(h, s, 1, [{ path: 'two.txt', bytes: 3 }])).body, { received: 2, manifestComplete: true });
@@ -66,6 +72,10 @@ test('paged manifest: files [] with fileCount, offset-ordered pages, chunks only
     assert.equal((await page(h, s, 2, [{ path: 'three.txt', bytes: 0 }])).status, 400);
     assert.equal((await h.post('/v1/backup/finish', { transferId: s.transferId, token: s.token })).state, 'complete');
     assert.equal(await fs.readFile(path.join(h.root, 'Owner', 'Pixel', name, 'two.txt'), 'utf8'), 'two');
+    const catalogChallenge = await h.challenge();
+    const catalog = await h.post('/v1/backups', { deviceId: h.deviceId, challenge: catalogChallenge, signature: h.signature({ deviceId: h.deviceId, challenge: catalogChallenge, action: 'catalog' }) });
+    assert.equal(catalog.backups[0].complete, true); assert.equal(catalog.backups[0].bytes, 6);
+    assert.equal(h.events.some(e => e.type === 'transfer_failed'), false);
   } finally { await h.close(); }
 });
 
@@ -103,6 +113,10 @@ test('paged manifest: byte sum must equal signed bytes', async () => {
     assert.equal((await page(h, s, 0, [{ path: 'a', bytes: 4 }])).status, 200);
     assert.equal((await page(h, s, 1, [{ path: 'b', bytes: 5 }])).body.code, 'invalid_request');
     assert.equal((await sendChunk(h, s, 0, 'abcd')).status, 400);
+    assert.equal((await page(h, s, 1, [{ path: 'b', bytes: 6 }])).body.manifestComplete, true);
+    assert.equal((await sendChunk(h, s, 0, 'abcd')).status, 200);
+    assert.equal((await sendChunk(h, s, 1, '123456')).status, 200);
+    assert.equal((await h.post('/v1/backup/finish', { transferId: s.transferId, token: s.token })).state, 'complete');
   } finally { await h.close(); }
 });
 

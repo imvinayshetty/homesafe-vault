@@ -53,3 +53,4 @@ use the editor.
 - Update README.md in the same change as any new feature or behaviour change; it is the single user-facing record of functionality.
 - Zero-config discovery (default-route IP, external drive search, mDNS advertising) lives in `vault-service/src/discovery.mjs`, shared by the CLI and Electron; pairing codes are minted only over the owner-authenticated loopback socket, never an unauthenticated HTTP endpoint.
 - The main page is viewport-locked (`h-svh overflow-hidden`); long content scrolls inside its own panel, and only the sample-monitoring toggle unlocks page scroll.
+- Native manifest paging uses fileCount/bytes on start and count-based offset on pages; chunk/finish preflight rejects incomplete manifests without failing the transfer so the phone can finish the list and retry safely.

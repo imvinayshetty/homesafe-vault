@@ -1,4 +1,5 @@
 # Backup workflow
+- [x] Finish paged-manifest verification: exact wire fields, retry after early data/completion, signed byte totals and disk/catalog readback verified; all 36 service and 62 dashboard tests pass. Both guides updated; no desktop package requested. Physical phone/Windows checks remain hardware-dependent.
 - [x] Track registration and sign-in milestones, completion and failures for visit-level drop-off analysis without personal data; four account tests and schema validation pass. Live collection requires preview/published use; real Authy completion was not exercised in this turn.
 - [ ] Instrument account recovery completion/drop-off: blocked because the app has no account-recovery flow; do not invent a recovery screen solely for instrumentation.
 - [x] Simplify presentation into sequential fresh sign-in, registration, Authy and destination screens; remove cloud-only notice and keep unrelated controls out of active flows. Desktop/phone layouts and ordered-action tests verified; real Authy completion remains unverified without an enrolled account.
