@@ -35,6 +35,16 @@ export async function createVaultService(config) {
     const s = await fs.stat(file).catch(() => null); if (s && s.size > 1024 * 1024) await fs.rename(file, `${file}.previous`);
     await fs.appendFile(file, JSON.stringify({ at: new Date().toISOString(), type, ...(stage ? { stage } : {}) }) + '\n', { mode: 0o600 });
   };
+  // Diagnostic log: the phone only ever sees a generic "Request rejected" message, so record the real cause here.
+  const logFailure = async (route, e, v) => {
+    try {
+      const file = path.join(config.stateDir, 'vault.log');
+      const s = await fs.stat(file).catch(() => null); if (s && s.size > 2 * 1024 * 1024) await fs.rename(file, `${file}.previous`);
+      const entry = { at: new Date().toISOString(), route, code: errorCode(e), error: String(e?.message ?? e).slice(0, 300), ...(e?.code ? { sysCode: e.code } : {}) };
+      if (Array.isArray(e?.issues)) entry.issues = e.issues.slice(0, 5).map(i => { const idx = i.path?.[0] === 'files' ? i.path[1] : undefined, name = typeof idx === 'number' ? v?.files?.[idx]?.path : undefined; return { at: i.path?.join('.'), message: i.message, ...(name !== undefined ? { filePath: String(name).slice(0, 160), length: String(name).length } : {}) }; });
+      await fs.appendFile(file, JSON.stringify(entry) + '\n', { mode: 0o600 });
+    } catch { /* logging must never break a request */ }
+  };
   const send = (ws, event) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(event)); };
   const emit = event => { if (event.type === 'transfer_progress' && history.at(-1)?.type === 'transfer_progress') history.pop(); history.push(event); for (const ws of monitors) send(ws, event); };
   const x509 = config.tls ? new X509Certificate(config.tls.cert) : null;
@@ -64,7 +74,7 @@ export async function createVaultService(config) {
       if (url.pathname === '/v1/pair/begin') { const ip = req.socket.remoteAddress, limit = attempts.get(ip), live = limit && limit.until > Date.now(); if (live && limit.count >= 5) return reject(res, vaultError('rate_limited')); attempts.set(ip, { count: live ? limit.count + 1 : 1, until: live ? limit.until : Date.now() + 60000 }); }
       let v = {};
       try { if (url.pathname !== '/v1/backup/chunk') v = await body(req); return reply(res, 200, await native.handle(url.pathname, v, req)); }
-      catch (e) { if (!e.retryableManifest && native.ownsRequest(url.pathname, v, req)) await native.fail(e); return reject(res, e); }
+      catch (e) { await logFailure(url.pathname, e, v); if (!e.retryableManifest && native.ownsRequest(url.pathname, v, req)) await native.fail(e); return reject(res, e); }
     }).catch(e => { if (!res.headersSent) reject(res, e); else res.destroy(); });
   };
   const monitorServer = http.createServer((req, res) => { if (req.url === '/v1/ready' && !req.headers.origin) { void assertRoot().then(() => reply(res,200,{service:'homesafe-vault',instanceId:config.instanceId,driveReady:true})).catch(() => reply(res,503,{driveReady:false})); } else reply(res,404,{error:'Use the authenticated monitor socket'}); });
