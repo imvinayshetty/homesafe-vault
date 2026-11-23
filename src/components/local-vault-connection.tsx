@@ -44,8 +44,8 @@ export function LocalVaultConnection({ email, onReady, onProfile }: { email: str
   }, [step]); // eslint-disable-line react-hooks/exhaustive-deps
   const inputClass = "mt-2 min-h-11 w-full rounded-md border border-input bg-background px-3";
   if (!step) return null;
-  if (destination) return <section aria-labelledby="live-vault-heading" className="space-y-4 py-2">
-    <div className="flex flex-wrap items-center justify-between gap-3"><h2 id="live-vault-heading" className="flex items-center gap-2 font-display text-2xl"><HardDrive className="h-5 w-5 text-primary" />Local Vault monitoring</h2><Button variant="outline" onClick={() => { setDestination(null); setAccessKey(""); setPhone(""); setStep("phone"); onReady?.(false); }}><Unplug />Disconnect dashboard</Button></div>
+  if (destination) return <section aria-labelledby="live-vault-heading" className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto overscroll-contain py-2">
+    <div className="flex shrink-0 flex-wrap items-center justify-between gap-3"><h2 id="live-vault-heading" className="flex items-center gap-2 font-display text-2xl"><HardDrive className="h-5 w-5 text-primary" />Local Vault monitoring</h2><Button variant="outline" onClick={() => { setDestination(null); setAccessKey(""); setPhone(""); setStep("phone"); onReady?.(false); }}><Unplug />Disconnect dashboard</Button></div>
     <TransferStatus {...destination} />
   </section>;
   const steps: Step[] = saved ? ["phone", "access"] : ["profile", "phone", "access"];

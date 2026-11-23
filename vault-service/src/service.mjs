@@ -7,6 +7,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { z } from 'zod';
 import { segment } from './storage.mjs';
 import { createNativeProtocol, vaultError, errorCode, ERROR_MESSAGES } from './native-protocol.mjs';
+import { createTransferHistory } from './transfer-history.mjs';
 export const CODE_LIFETIME_MS = 30000;
 export const MINTED_CODE_LIFETIME_MS = 120000;
 export const DEFAULT_LAN_PORT = 7443;
@@ -47,7 +48,9 @@ export async function createVaultService(config) {
   };
   const reply = (res, status, body) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
   const body = async req => { let size = 0, chunks = []; for await (const c of req) { size += c.length; if (size > 2 * 1024 * 1024) throw new Error('Request too large'); chunks.push(c); } return JSON.parse(Buffer.concat(chunks).toString()); };
-  const native = createNativeProtocol({ root, key, selected: () => selected, pairing: () => pairing, consumeCode: () => { pairing = null; }, records: () => records, saveRecords: async next => { await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); records = next; }, emit, audit, assertRoot, validCode });
+  const sendHistory = ws => send(ws, { type: 'transfer_history', backups: transferHistory.list(selected) });
+  const transferHistory = await createTransferHistory({ stateDir: config.stateDir, root, key, assertRoot, onChange: () => { for (const ws of monitors) sendHistory(ws); } });
+  const native = createNativeProtocol({ root, key, selected: () => selected, pairing: () => pairing, consumeCode: () => { pairing = null; }, records: () => records, saveRecords: async next => { await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); records = next; }, emit, audit, assertRoot, validCode, history: transferHistory });
   const reject = (res, e) => { const code = errorCode(e); reply(res, STATUS[code] ?? 400, { error: ERROR_MESSAGES[code], code }); };
   const ROUTES = ['/v1/pair/begin', '/v1/pair/confirm', '/v1/device/challenge', '/v1/backups', '/v1/backup/start', '/v1/backup/files', '/v1/backup/chunk', '/v1/backup/finish'];
   const handler = (req, res) => {
@@ -61,7 +64,7 @@ export async function createVaultService(config) {
       if (url.pathname === '/v1/pair/begin') { const ip = req.socket.remoteAddress, limit = attempts.get(ip), live = limit && limit.until > Date.now(); if (live && limit.count >= 5) return reject(res, vaultError('rate_limited')); attempts.set(ip, { count: live ? limit.count + 1 : 1, until: live ? limit.until : Date.now() + 60000 }); }
       let v = {};
       try { if (url.pathname !== '/v1/backup/chunk') v = await body(req); return reply(res, 200, await native.handle(url.pathname, v, req)); }
-      catch (e) { if (!e.retryableManifest && native.ownsRequest(url.pathname, v, req)) await native.fail(); return reject(res, e); }
+      catch (e) { if (!e.retryableManifest && native.ownsRequest(url.pathname, v, req)) await native.fail(e); return reject(res, e); }
     }).catch(e => { if (!res.headersSent) reject(res, e); else res.destroy(); });
   };
   const monitorServer = http.createServer((req, res) => { if (req.url === '/v1/ready' && !req.headers.origin) { void assertRoot().then(() => reply(res,200,{service:'homesafe-vault',instanceId:config.instanceId,driveReady:true})).catch(() => reply(res,503,{driveReady:false})); } else reply(res,404,{error:'Use the authenticated monitor socket'}); });
@@ -75,13 +78,17 @@ export async function createVaultService(config) {
         const v = JSON.parse(raw.toString());
         if (!authenticated) { if (v.type !== 'authenticate' || !equal(v.token, config.adminToken)) return ws.close(1008, 'Unauthorized'); authenticated = true; clearTimeout(timeout); send(ws, { type: 'service_ready' }); return; }
         if (v.type === 'select_destination' || v.type === 'reset') {
-          if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone && (selected?.email ?? '') === (v.email ?? '').toLowerCase()) { monitors.add(ws); for (const e of history) send(ws, e); if (pairing && !history.length) send(ws, codeEvent()); return; }
+          if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone && (selected?.email ?? '') === (v.email ?? '').toLowerCase()) { monitors.add(ws); sendHistory(ws); for (const e of history) send(ws, e); if (pairing && !history.length) send(ws, codeEvent()); return; }
           if (native.active()) throw new Error('A transfer is active');
           if (v.type === 'select_destination' && [...monitors].some(m => m !== ws && m.readyState === WebSocket.OPEN)) throw new Error('Another dashboard owns the selected destination');
           monitors.add(ws);
           native.reset();
           if (v.type === 'select_destination') selected = { profile: segment.parse(v.profile), phone: segment.parse(v.phone), ...(v.email ? { email: z.string().email().max(254).parse(v.email).toLowerCase() } : {}) };
-          history = []; rotate(); await audit('profile_selected');
+          history = []; sendHistory(ws); rotate(); await audit('profile_selected');
+        }
+        if (v.type === 'verify_backup') {
+          if (!selected || !monitors.has(ws) || native.active()) throw new Error('Wait for the current transfer to finish');
+          await transferHistory.recheck(z.string().parse(v.id), selected, records); return;
         }
         if (v.type === 'mint_pairing') {
           // Owner-authenticated loopback replacement for the old terminal `pair` command: single-use, 120 seconds.

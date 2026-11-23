@@ -16,6 +16,7 @@ export const ERROR_MESSAGES = {
   too_many_files: 'This backup has too many files for one request or one backup.',
   rate_limited: 'Too many attempts; wait one minute.',
   invalid_request: 'Request rejected; check the signature and request fields.',
+  integrity_mismatch: 'Backup verification found files that do not match the transferred data.',
 };
 export const vaultError = code => Object.assign(new Error(code), { vaultCode: code });
 export function errorCode(e) {
@@ -34,7 +35,7 @@ export function nativeSignature(publicKey, signature, value) {
   if (!verify(null, Buffer.from(canonical(value)), key, Buffer.from(z.string().parse(signature), 'base64'))) throw vaultError('invalid_request');
 }
 const entrySchema = z.object({ path: filePath, bytes: z.number().int().nonnegative().max(1024 ** 4) });
-export function createNativeProtocol({ root, key, selected, pairing, consumeCode, records, saveRecords, emit, audit, assertRoot, validCode }) {
+export function createNativeProtocol({ root, key, selected, pairing, consumeCode, records, saveRecords, emit, audit, assertRoot, validCode, history }) {
  const pending = new Map(), challenges = new Map(); let transfer = null;
  const random = () => randomBytes(32).toString('base64url');
  const identity = r => ({ profile: r.profile, phone: r.phone, publicKey: r.publicKey });
@@ -92,7 +93,8 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     const r = proof(v, 'backup', { name: v.name, kind: v.kind, files: totalFiles, bytes: totalBytes });
     if (transfer && !transfer.failed && !transfer.finished) throw vaultError('transfer_active'); await assertRoot();
     const t = await createTransfer(root, key, identity(r), { kind: v.kind, name: v.name, declaredBytes: totalBytes, paged, files: page.map(f => ({ ...f, sha256: '0'.repeat(64) })) });
-    transfer = { ...t, id: random(), token: random(), deviceId: r.deviceId, identity: identity(r), totalFiles, totalBytes, seen: new Set(t.files.map(f => f.path.toLowerCase())), offsets: new Map(), hashes: new Map(), failed: false, lastActivity: Date.now() };
+    transfer = { ...t, id: random(), token: random(), deviceId: r.deviceId, identity: identity(r), totalFiles, totalBytes, receivedBytes: 0, seen: new Set(t.files.map(f => f.path.toLowerCase())), offsets: new Map(), hashes: new Map(), failed: false, lastActivity: Date.now() };
+    await history.start(transfer, { email: r.email, profile: r.profile, phone: r.phone });
     emit({ type: 'phone_connecting' }); emit({ type: 'pairing_verified', profile: r.profile, phone: r.phone }); emit({ type: 'transfer_started' }); emit({ type: 'transfer_progress', files: 0, total: totalFiles }); await audit('transfer_started');
     return { transferId: transfer.id, token: transfer.token, manifestComplete: !paged };
    }
@@ -108,6 +110,7 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     if (bytes > t.totalBytes || (complete && bytes !== t.totalBytes)) throw vaultError('invalid_request');
     for (const k of keys) t.seen.add(k); t.files.push(...page.map(f => ({ ...f, sha256: '0'.repeat(64) }))); t.bytes = bytes; t.lastActivity = Date.now();
     if (complete) { await assertRoot(); await writeManifest(t, false); }
+    await history.update(t.id, { manifestReceived: t.files.length, status: complete ? 'transferring' : 'receiving_manifest' });
     return { received: t.files.length, manifestComplete: complete };
    }
    if (route === '/v1/backup/chunk') {
@@ -121,13 +124,31 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     const handle = await fs.open(target, constants.O_WRONLY | constants.O_NOFOLLOW | (offset === 0 ? constants.O_CREAT | constants.O_EXCL : 0), 0o600);
     try { if ((await handle.stat()).size !== offset) throw new Error('File offset changed'); let written=0; while(written<data.length) {const result=await handle.write(data,written,data.length-written,offset+written);written+=result.bytesWritten;} await handle.sync(); } finally { await handle.close(); }
     const hash = t.hashes.get(index) ?? createHash('sha256'); hash.update(data); t.hashes.set(index,hash); t.offsets.set(index,offset+bytes); t.lastActivity=Date.now();
+    t.receivedBytes += bytes;
     if (offset+bytes === entry.bytes) { entry.sha256=hash.digest('hex'); t.completed.add(index); emit({ type: 'transfer_progress', files: t.completed.size, total: t.totalFiles }); }
+    await history.update(t.id, { receivedFiles: t.completed.size, receivedBytes: t.receivedBytes });
     return { received: offset+bytes };
    }
-   if (route === '/v1/backup/finish') { const t = authorizedTransfer(v); requireManifest(t); await assertRoot(); await finishTransfer(root,key,t.identity,t); t.finished=true; emit({ type:'transfer_completed' }); await audit('transfer_completed'); return { state:'complete',sentBytes:t.bytes,totalBytes:t.bytes }; }
+   if (route === '/v1/backup/finish') {
+    const t = authorizedTransfer(v); requireManifest(t); await assertRoot();
+    if (t.completed.size !== t.totalFiles) throw vaultError('invalid_request');
+    await writeManifest(t, false);
+    await history.update(t.id, { status: 'verifying', integrity: { status: 'checking', checkedFiles: 0, mismatchCount: 0, issues: [] } });
+    emit({ type: 'transfer_verifying', checkedFiles: 0, total: t.totalFiles });
+    t.onVerificationProgress = async checkedFiles => { emit({ type: 'transfer_verifying', checkedFiles, total: t.totalFiles }); await history.update(t.id, { integrity: { status: 'checking', checkedFiles, mismatchCount: 0, issues: [] } }); };
+    const integrity = await finishTransfer(root,key,t.identity,t);
+    t.finished=true;
+    await history.update(t.id, { status: 'completed', completedAt: new Date().toISOString(), integrity });
+    emit({ type:'transfer_completed' }); await audit('transfer_completed'); return { state:'complete',sentBytes:t.bytes,totalBytes:t.bytes };
+   }
    throw vaultError('invalid_request');
   },
-  async fail() { if (transfer) transfer.failed=true; emit({type:'transfer_failed',reason:'Phone transfer failed. Check Wi-Fi and the connected drive.'}); await audit('failure','transfer'); },
+  async fail(error) {
+    const code = error ? errorCode(error) : 'transfer_interrupted';
+    const reason = ERROR_MESSAGES[code] ?? 'Phone transfer stopped. Check Wi-Fi and the connected drive.';
+    if (transfer) { transfer.failed=true; await history.update(transfer.id, { status: 'failed', failureCode: code, failureReason: reason, ...(error?.integrity ? { integrity: error.integrity } : {}) }); }
+    emit({type:'transfer_failed',reason}); await audit('failure','transfer');
+  },
   expired: () => transfer && !transfer.failed && !transfer.finished && Date.now()-transfer.lastActivity>180000,
  };
 }

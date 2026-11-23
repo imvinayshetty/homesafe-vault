@@ -93,11 +93,37 @@ export async function receiveFile(root, key, identity, t, index, stream) {
 export async function finishTransfer(root, key, identity, t) {
   await verifyIdentity(root, key, identity);
   if (t.completed.size !== t.files.length) throw new Error('Not all files have arrived');
+  const integrity = await verifyBackupFiles(root, key, identity, t, t.onVerificationProgress);
+  if (integrity.status !== 'verified') throw Object.assign(new Error('Disk readback failed: backup integrity mismatch'), { vaultCode: 'integrity_mismatch', integrity });
+  await writeManifest(t, true);
+  return integrity;
+}
+
+/** Read-only SHA-256 + size verification; collect all mismatches, show at most 50 paths. */
+export async function verifyBackupFiles(root, key, identity, t, onProgress) {
+  const rootStat = await fs.lstat(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) throw new Error('Drive unavailable');
+  const issues = []; let checkedFiles = 0, mismatchCount = 0;
   for (const entry of t.files) {
+    const currentRoot = await fs.lstat(root);
+    if (currentRoot.dev !== rootStat.dev || currentRoot.ino !== rootStat.ino || currentRoot.isSymbolicLink()) throw new Error('Drive changed');
+    await verifyIdentity(root, key, identity);
+    filePath.parse(entry.path);
+    let issue;
+    try {
     let parent = await directory(await phoneFolder(root, identity.profile, identity.phone), t.name);
     const parts = entry.path.split('/'); for (const p of parts.slice(0, -1)) parent = await directory(parent, p);
     const h = await fs.open(path.join(parent, parts.at(-1)), constants.O_RDONLY | constants.O_NOFOLLOW);
-    try { const hash = createHash('sha256'); for await (const chunk of h.createReadStream({ autoClose: false })) hash.update(chunk); if (hash.digest('hex') !== entry.sha256) throw new Error('Disk readback failed'); } finally { await h.close(); }
+    try {
+      const stat = await h.stat();
+      if (!stat.isFile()) throw new Error('Not a regular file');
+      if (stat.size !== entry.bytes) issue = { path: entry.path, reason: 'size', expectedBytes: entry.bytes, actualBytes: stat.size };
+      else { const hash = createHash('sha256'); for await (const chunk of h.createReadStream({ autoClose: false })) hash.update(chunk); if (hash.digest('hex') !== entry.sha256) issue = { path: entry.path, reason: 'checksum', expectedBytes: entry.bytes, actualBytes: stat.size }; }
+    } finally { await h.close(); }
+    } catch (e) { issue = { path: entry.path, reason: e.code === 'ENOENT' ? 'missing' : 'unreadable', expectedBytes: entry.bytes }; }
+    if (issue) { mismatchCount++; if (issues.length < 50) issues.push(issue); }
+    checkedFiles++;
+    if (onProgress && (checkedFiles % 100 === 0 || checkedFiles === t.files.length)) await onProgress(checkedFiles);
   }
-  await writeManifest(t, true);
+  return { status: mismatchCount ? 'mismatch' : 'verified', checkedFiles, mismatchCount, issues, checkedAt: new Date().toISOString() };
 }

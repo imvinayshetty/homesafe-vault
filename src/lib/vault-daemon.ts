@@ -17,9 +17,10 @@ export type DaemonEvent =
   | { type: "transfer_started" }
   | { type: "transfer_progress"; files: number; total: number }
   | { type: "transfer_completed" }
+  | { type: "transfer_verifying"; checkedFiles: number; total: number }
   | { type: "transfer_failed"; reason: string };
 
-export interface TransferState { stage: 0 | 1 | 2 | 3 | 4 | 5; failed?: string; progress?: number }
+export interface TransferState { stage: 0 | 1 | 2 | 3 | 4 | 5; failed?: string; progress?: number; verifying?: { checkedFiles: number; total: number } }
 
 export function parseDaemonEvent(raw: unknown): DaemonEvent | null {
   try {
@@ -39,6 +40,7 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent | null {
       case "phone_connecting": case "transfer_started": case "transfer_completed": return { type: v.type };
       case "pairing_verified": return typeof v.profile === "string" && typeof v.phone === "string" ? { type: v.type, profile: v.profile, phone: v.phone } : null;
       case "transfer_progress": return Number.isFinite(v.files) && Number.isFinite(v.total) && v.total > 0 ? { type: v.type, files: v.files, total: v.total } : null;
+      case "transfer_verifying": return Number.isSafeInteger(v.checkedFiles) && Number.isSafeInteger(v.total) && v.checkedFiles >= 0 && v.total > 0 && v.checkedFiles <= v.total ? { type: v.type, checkedFiles: v.checkedFiles, total: v.total } : null;
       case "transfer_failed": return { type: v.type, reason: typeof v.reason === "string" ? v.reason.slice(0, 200) : "Unknown error" };
     }
   } catch { /* malformed */ }
@@ -59,5 +61,6 @@ export function applyDaemonEvent(s: TransferState, e: DaemonEvent, profile: stri
     case "transfer_started": return s.stage === 2 ? { stage: 3 } : s;
     case "transfer_progress": return s.stage === 3 || s.stage === 4 ? { stage: 4, progress: Math.min(1, e.files / e.total) } : s;
     case "transfer_completed": return s.stage === 4 ? { stage: 5, progress: 1 } : s;
+    case "transfer_verifying": return s.stage === 4 ? { ...s, verifying: { checkedFiles: e.checkedFiles, total: e.total } } : s;
   }
 }
