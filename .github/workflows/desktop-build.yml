@@ -1,6 +1,6 @@
 # HomeSafe Vault (desktop): tests + Windows and macOS packages.
-# Windows runs on every push/PR. macOS is slower and costs more on private repos,
-# so it only runs when you start it by hand ("Run workflow" -> build_macos) or push a v* tag.
+# Every job runs on every push, pull request and manual run. Nothing is optional: if any step of any job
+# fails, or any job is skipped, the "All desktop checks passed" job fails, so the whole workflow fails.
 name: Desktop build
 
 on:
@@ -9,11 +9,6 @@ on:
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
-    inputs:
-      build_macos:
-        description: "Also build the macOS app"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -138,7 +133,6 @@ jobs:
   package-macos:
     name: Package macOS (Apple Silicon + Intel)
     needs: [vectors-guard, vault-service-tests, dashboard-tests]
-    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.build_macos) || startsWith(github.ref, 'refs/tags/v') }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -160,8 +154,9 @@ jobs:
             echo "Using dist/client"
           elif [ -f .output/public/index.html ]; then
             rm -rf dist/client && mkdir -p dist && cp -R .output/public dist/client
+            echo "Copied .output/public to dist/client"
           else
-            echo "::error::No dashboard build found"; exit 1
+            echo "::error::No dashboard build found (looked in dist/client and .output/public)"; exit 1
           fi
 
       - name: Install service and Electron dependencies
@@ -182,11 +177,15 @@ jobs:
         working-directory: electron
         run: |
           for a in arm64 x64; do
-            R="release/HomeSafe Vault-darwin-$a/HomeSafe Vault.app/Contents/Resources"
+            APP="release/HomeSafe Vault-darwin-$a/HomeSafe Vault.app"; R="$APP/Contents/Resources"
+            test -f "$APP/Contents/MacOS/HomeSafe Vault"
             test -f "$R/dashboard/index.html"
             test -f "$R/vault-service/src/cli.mjs"
+            test -f "$R/vault-service/src/discovery.mjs"
             test -f "$R/vault-service/src/transfer-history.mjs"
+            test -d "$R/vault-service/node_modules/ws"
             test -d "$R/vault-service/node_modules/bonjour-service"
+            test -d "$R/app/node_modules/selfsigned"
           done
           echo "Package layout OK"
 
@@ -203,3 +202,17 @@ jobs:
           path: electron/release/HomeSafe-Vault-mac-*.zip
           retention-days: 14
           if-no-files-found: error
+
+  # Single result for branch protection: every job above must have succeeded. A skipped, cancelled or failed job fails this.
+  build-status:
+    name: All desktop checks passed
+    if: ${{ always() }}
+    needs: [vectors-guard, vault-service-tests, dashboard-tests, package-windows, package-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail unless every job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          echo "$RESULTS" | jq -e 'all(.[]; .result == "success")' > /dev/null
