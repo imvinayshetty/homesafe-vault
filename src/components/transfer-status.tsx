@@ -43,6 +43,7 @@ export function TransferStatus({ profile, phone, email = "", accessKey = "" }: {
           { const { type: _t, ...code } = e; setPairing({ ...code, expiresAt: Math.min(e.expiresAt, Date.now() + MINTED_PAIRING_CODE_LIFETIME_MS) }); }
           return;
         }
+        if (e.type === "pairing_failed") { ws?.send(JSON.stringify({ type: "mint_pairing" })); }
         if (e.type === "phone_connecting") { setPairing(null); if (stateRef.current.stage > 1) return; setShowHistory(false); }
         const prev = stateRef.current; const next = applyDaemonEvent(prev, e, profile, phone);
         if (next === prev) return;
@@ -86,6 +87,7 @@ export function AwaitingCard({ service, profile, phone, sample, action, pairing,
 /** Full-screen payment-style transfer animation, from Establishing connection onwards. */
 export function TransferScreen({ state, profile, phone, service, onClose, onViewHistory, sample }: { state: TransferState; profile: string; phone: string; service: Service; onClose?: (() => void) | undefined; onViewHistory?: () => void; sample?: boolean }) {
   const { stage, failed, progress } = state;
+  const speed = state.bytesPerSecond !== undefined ? `${(state.bytesPerSecond / 1048576).toFixed(1)} MB/s` : "";
   const steps = transferSteps(profile, phone);
   const pct = Math.round((progress ?? 0) * 100);
   const done = stage === 5 && !failed;
@@ -96,7 +98,7 @@ export function TransferScreen({ state, profile, phone, service, onClose, onView
     : stage === 1 ? "Securing a private link over your home Wi-Fi"
     : stage === 2 ? "Phone identity confirmed · choose Full or Custom backup on your phone"
     : stage === 3 ? "Preparing the phone folder on your drive"
-    : stage === 4 ? `${pct}% copied to ${ROOTLESS(profile, phone)}`
+    : stage === 4 ? `${pct}% copied to ${ROOTLESS(profile, phone)}${speed ? ` · ${speed}` : ""}`
     : "Every file is saved on your local drive";
   const R = 88, C = 2 * Math.PI * R;
   const ring = stage === 4 ? pct / 100 : stage >= 5 ? 1 : stage === 3 ? 0.08 : 0;

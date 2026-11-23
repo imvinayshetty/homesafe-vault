@@ -15,5 +15,16 @@ describe("daemon transfer stages", () => {
     const s = run([{ type: "phone_connecting" }, { type: "pairing_verified", profile: "Vinay", phone: "My Pixel" }, { type: "transfer_started" }, { type: "transfer_failed", reason: "Drive full" }]);
     expect(s).toMatchObject({ stage: 3, failed: "Drive full" });
   });
+  it("progress follows bytes (matching the phone) when the service sends them", () => {
+    const s = run([{ type: "phone_connecting" }, { type: "pairing_verified", profile: "Vinay", phone: "My Pixel" }, { type: "transfer_started" }, { type: "transfer_progress", files: 1, total: 100, bytes: 600, totalBytes: 1000 }]);
+    expect(s.progress).toBeCloseTo(0.6);
+  });
+  it("carries the transfer speed to the screen state", () => {
+    const s = run([{ type: "phone_connecting" }, { type: "pairing_verified", profile: "Vinay", phone: "My Pixel" }, { type: "transfer_started" }, { type: "transfer_progress", files: 1, total: 2, bytesPerSecond: 5242880 }]);
+    expect(s.bytesPerSecond).toBe(5242880);
+  });
+  it("returns to awaiting when pairing fails instead of sticking on connecting", () => {
+    expect(run([{ type: "phone_connecting" }, { type: "pairing_failed" }]).stage).toBe(0);
+  });
   it("drops malformed messages", () => { expect(parseDaemonEvent("{bad")).toBeNull(); expect(parseDaemonEvent({ type: "pairing_verified" })).toBeNull(); });
 });

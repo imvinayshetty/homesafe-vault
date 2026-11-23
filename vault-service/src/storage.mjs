@@ -5,8 +5,8 @@ import { z } from 'zod';
 
 export const segment = z.string().min(1).max(80).refine(s => s === s.trim() && !/[\\/<>:"|?*\x00-\x1f]/.test(s) && !/[. ]$/.test(s) && !/^(\.|\.\.|con|prn|aux|nul|com[1-9]|lpt[1-9])(\.|$)/i.test(s), 'Invalid folder name');
 export const filePath = z.string().max(1024).refine(s => s.split('/').every(p => segment.safeParse(p).success && !p.startsWith('.homesafe')), 'Invalid file path');
-const manifestFiles = z.array(z.object({ path: filePath, bytes: z.number().int().nonnegative().max(1024 ** 4), sha256: z.string().regex(/^[a-f0-9]{64}$/) })).max(10000);
-export const manifestSchema = z.object({ kind: z.enum(['Full', 'Custom']), name: segment.optional(), files: manifestFiles.min(1) });
+const manifestFiles = z.array(z.object({ path: filePath, bytes: z.number().int().nonnegative().max(1024 ** 4), sha256: z.string().regex(/^[a-f0-9]{64}$/), modified: z.number().int().nonnegative().optional() })).max(10000);
+export const manifestSchema = z.object({ kind: z.enum(['Full', 'Custom']), name: segment.optional(), basedOn: segment.optional(), skipped: z.array(z.object({ path: z.string(), reason: z.string() })).optional(), files: manifestFiles.min(1) });
 const pagedManifestSchema = manifestSchema.extend({ files: manifestFiles.length(0) });
 export function dateCode(d = new Date()) { return [d.getDate(), d.getMonth() + 1, d.getFullYear() % 100].map(v => String(v).padStart(2, '0')).join(''); }
 // `sameFolderIgnoringCase` is for folders INSIDE a backup (DCIM vs dcim, Download vs download): phones can hold both
@@ -49,6 +49,20 @@ export async function enrollIdentity(root, key, identity) {
   const folder = await directory(profileFolder, identity.phone, true);
   await fs.writeFile(path.join(folder, '.homesafe-daemon-identity.json'), JSON.stringify(seal(key, identity)), { flag: 'wx', mode: 0o600 });
 }
+/** Claims a phone folder whose identity seal this Vault cannot open (its key was lost with a deleted app-data folder). Backups inside are kept; the old seal is renamed, not deleted. */
+export async function adoptOrphanIdentity(root, key, identity) {
+  const folder = await phoneFolder(root, identity.profile, identity.phone), file = path.join(folder, '.homesafe-daemon-identity.json');
+  const value = JSON.parse(await fs.readFile(file, 'utf8').catch(() => 'null'));
+  if (value) {
+    try {
+      const d = createDecipheriv('aes-256-gcm', key, Buffer.from(value.iv, 'base64'));
+      d.setAAD(Buffer.from(`${identity.profile}/${identity.phone}`)); d.setAuthTag(Buffer.from(value.tag, 'base64'));
+      d.update(Buffer.from(value.ciphertext, 'base64')); d.final();
+    } catch { await fs.rename(file, path.join(folder, `.homesafe-daemon-identity.replaced-${Date.now()}.json`)); value.orphan = true; }
+    if (!value.orphan) throw new Error('Phone folder already exists; it will not be replaced');
+  }
+  await fs.writeFile(file, JSON.stringify(seal(key, identity)), { flag: 'wx', mode: 0o600 });
+}
 export async function createTransfer(root, key, identity, input, now = new Date()) {
   const manifest = (input.paged ? pagedManifestSchema : manifestSchema).parse(input), date = dateCode(now), base = `${manifest.kind}_Bckup_${date}`, name = manifest.name ?? base;
   if (name !== base && !name.startsWith(`${base}_`)) throw new Error(`Keep ${base} at the start of the backup name`);
@@ -64,8 +78,18 @@ export async function createTransfer(root, key, identity, input, now = new Date(
   await writeManifest(transfer, false);
   return transfer;
 }
+/** Removes the half-written copy of one file (after the phone reported it could not finish it). Regular files only; never follows links. */
+export async function discardPartial(root, key, identity, t, entry) {
+  try {
+    await verifyIdentity(root, key, identity);
+    let parent = await directory(await phoneFolder(root, identity.profile, identity.phone), t.name);
+    const parts = entry.path.split('/'); for (const p of parts.slice(0, -1)) parent = await directory(parent, p, false, true);
+    const target = path.join(parent, parts.at(-1)), st = await fs.lstat(target);
+    if (st.isFile()) await fs.unlink(target);
+  } catch { /* nothing partial on disk */ }
+}
 export async function writeManifest(t, complete) {
-  const data = { name: t.name, date: t.date, kind: t.kind, files: t.files.length, bytes: t.bytes, complete, createdAt: t.createdAt, entries: t.files };
+  const data = { name: t.name, date: t.date, kind: t.kind, ...(t.basedOn ? { basedOn: t.basedOn } : {}), ...(t.skipped?.length ? { skipped: t.skipped.slice(0, 1000) } : {}), files: t.files.length, bytes: t.bytes, complete, createdAt: t.createdAt, entries: t.files };
   const filename = path.join(t.destination, '.homesafe-backup.json');
   const handle = await fs.open(filename, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
   try { await handle.writeFile(JSON.stringify(data)); await handle.sync(); } finally { await handle.close(); }

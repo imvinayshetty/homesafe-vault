@@ -13,14 +13,15 @@ export const manualAddress = (p: Pick<PairingCode, "host" | "port">) => p.host &
 export type DaemonEvent =
   | ({ type: "pairing_code" } & PairingCode)
   | { type: "phone_connecting" }
+  | { type: "pairing_failed" }
   | { type: "pairing_verified"; profile: string; phone: string }
   | { type: "transfer_started" }
-  | { type: "transfer_progress"; files: number; total: number }
+  | { type: "transfer_progress"; files: number; total: number; bytes?: number; totalBytes?: number; bytesPerSecond?: number }
   | { type: "transfer_completed" }
   | { type: "transfer_verifying"; checkedFiles: number; total: number }
   | { type: "transfer_failed"; reason: string };
 
-export interface TransferState { stage: 0 | 1 | 2 | 3 | 4 | 5; failed?: string; progress?: number; verifying?: { checkedFiles: number; total: number } }
+export interface TransferState { stage: 0 | 1 | 2 | 3 | 4 | 5; failed?: string; progress?: number; bytesPerSecond?: number; verifying?: { checkedFiles: number; total: number } }
 
 export function parseDaemonEvent(raw: unknown): DaemonEvent | null {
   try {
@@ -37,9 +38,15 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent | null {
         if (Number.isFinite(v.certExpiresAt)) e.certExpiresAt = v.certExpiresAt;
         return e;
       }
-      case "phone_connecting": case "transfer_started": case "transfer_completed": return { type: v.type };
+      case "phone_connecting": case "pairing_failed": case "transfer_started": case "transfer_completed": return { type: v.type };
       case "pairing_verified": return typeof v.profile === "string" && typeof v.phone === "string" ? { type: v.type, profile: v.profile, phone: v.phone } : null;
-      case "transfer_progress": return Number.isFinite(v.files) && Number.isFinite(v.total) && v.total > 0 ? { type: v.type, files: v.files, total: v.total } : null;
+      case "transfer_progress": {
+        if (!Number.isFinite(v.files) || !Number.isFinite(v.total) || v.total <= 0) return null;
+        // Byte counts match what the phone shows; older Vaults only send file counts.
+        const sized = Number.isFinite(v.bytes) && Number.isFinite(v.totalBytes) && v.totalBytes > 0 && v.bytes >= 0;
+        const speed = Number.isFinite(v.bytesPerSecond) && v.bytesPerSecond >= 0 ? { bytesPerSecond: v.bytesPerSecond } : {};
+        return sized ? { type: v.type, files: v.files, total: v.total, bytes: v.bytes, totalBytes: v.totalBytes, ...speed } : { type: v.type, files: v.files, total: v.total, ...speed };
+      }
       case "transfer_verifying": return Number.isSafeInteger(v.checkedFiles) && Number.isSafeInteger(v.total) && v.checkedFiles >= 0 && v.total > 0 && v.checkedFiles <= v.total ? { type: v.type, checkedFiles: v.checkedFiles, total: v.total } : null;
       case "transfer_failed": return { type: v.type, reason: typeof v.reason === "string" ? v.reason.slice(0, 200) : "Unknown error" };
     }
@@ -50,6 +57,7 @@ export function parseDaemonEvent(raw: unknown): DaemonEvent | null {
 /** Advances only in order and only for the confirmed profile/phone; out-of-order events are ignored. */
 export function applyDaemonEvent(s: TransferState, e: DaemonEvent, profile: string, phone: string): TransferState {
   if (e.type === "pairing_code") return s;
+  if (e.type === "pairing_failed") return s.stage === 1 && !s.failed ? { stage: 0 } : s;
   if (e.type === "transfer_failed") return s.stage === 5 ? s : { ...s, failed: e.reason };
   if (s.failed || s.stage === 5) return e.type === "phone_connecting" ? { stage: 1 } : s;
   switch (e.type) {
@@ -59,7 +67,7 @@ export function applyDaemonEvent(s: TransferState, e: DaemonEvent, profile: stri
       if (e.profile.toLowerCase() !== profile.toLowerCase() || e.phone.toLowerCase() !== phone.toLowerCase()) return { ...s, failed: "Paired phone does not match the confirmed profile and phone folder." };
       return { stage: 2 };
     case "transfer_started": return s.stage === 2 ? { stage: 3 } : s;
-    case "transfer_progress": return s.stage === 3 || s.stage === 4 ? { stage: 4, progress: Math.min(1, e.files / e.total) } : s;
+    case "transfer_progress": return s.stage === 3 || s.stage === 4 ? { stage: 4, progress: Math.min(1, e.bytes !== undefined && e.totalBytes ? e.bytes / e.totalBytes : e.files / e.total), ...(e.bytesPerSecond !== undefined ? { bytesPerSecond: e.bytesPerSecond } : {}) } : s;
     case "transfer_completed": return s.stage === 4 ? { stage: 5, progress: 1 } : s;
     case "transfer_verifying": return s.stage === 4 ? { ...s, verifying: { checkedFiles: e.checkedFiles, total: e.total } } : s;
   }

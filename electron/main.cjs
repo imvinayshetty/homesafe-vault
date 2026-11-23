@@ -28,7 +28,7 @@ const originOf = u => u.startsWith('app://') ? 'app://' + new URL(u).host : new 
 const stateDir = path.join(app.getPath('userData'), 'vault-service');
 const configPath = path.join(stateDir, 'config.json');
 const serviceDir = app.isPackaged ? path.join(process.resourcesPath, 'vault-service') : path.join(__dirname, '..', 'vault-service');
-let service = null, win = null, lastError = '';
+let service = null, win = null, lastError = '', pickedSource = 'chosen';
 
 const discovery = () => import(pathToFileURL(path.join(serviceDir, 'src', 'discovery.mjs')).href);
 async function lanIP() { return (await discovery()).defaultRouteIPv4(); }
@@ -47,7 +47,7 @@ async function chooseBackupRoot() {
   const found = await d.findBackupRoot(drives);
   if (found) {
     const drive = drives.find(x => found.root.startsWith(x.root));
-    if (await confirmDrive(found.root, { ...drive, existing: found.existing })) { if (!found.existing) await fsp.mkdir(found.root); return found.root; }
+    if (await confirmDrive(found.root, { ...drive, existing: found.existing })) { if (!found.existing) await fsp.mkdir(found.root); pickedSource = 'auto'; return found.root; }
   } else {
     await dialog.showMessageBox({ type: 'info', title: 'HomeSafe Vault setup', message: 'Plug in your USB backup drive, then choose it.', detail: 'This is a one-time step. Nothing is uploaded; backups stay on this drive.' });
   }
@@ -56,7 +56,7 @@ async function chooseBackupRoot() {
     if (pick.canceled || !pick.filePaths[0]) throw new Error('No backup drive chosen. Plug in your USB drive and reopen HomeSafe Vault.');
     const picked = pick.filePaths[0], target = path.basename(picked) === 'HomeSafeBckup' ? picked : path.join(picked, 'HomeSafeBckup');
     const existing = fs.existsSync(target);
-    if (await confirmDrive(target, { ...(await driveInfo(existing ? target : picked)), name: path.basename(path.dirname(target)) || path.dirname(target), existing })) { if (!existing) await fsp.mkdir(target); return target; }
+    if (await confirmDrive(target, { ...(await driveInfo(existing ? target : picked)), name: path.basename(path.dirname(target)) || path.dirname(target), existing })) { if (!existing) await fsp.mkdir(target); pickedSource = 'chosen'; return target; }
   }
 }
 
@@ -104,7 +104,7 @@ async function adoptRoot(cfg, chosen) {
     await fsp.writeFile(`${phonesFile}.bak`, JSON.stringify(records), { mode: 0o600 });
     await fsp.writeFile(phonesFile, JSON.stringify(records.filter(r => !missing.includes(r))), { mode: 0o600 });
   }
-  cfg.root = root; cfg.driveIdentity = { dev: st.dev, ino: st.ino };
+  cfg.root = root; cfg.driveIdentity = { dev: st.dev, ino: st.ino }; cfg.locationSource = pickedSource;
   await fsp.writeFile(configPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
 }
 
@@ -126,7 +126,7 @@ async function firstRunSetup() {
   const pems = selfsigned.generate([{ name: 'commonName', value: 'HomeSafe Vault' }], { days: 1825, keySize: 2048, algorithm: 'sha256', extensions: [{ name: 'subjectAltName', altNames: [{ type: 7, ip }] }] });
   const cert = path.join(stateDir, 'vault.crt'), key = path.join(stateDir, 'vault.key');
   await fsp.writeFile(cert, pems.cert, { flag: 'wx' }); await fsp.writeFile(key, pems.private, { flag: 'wx', mode: 0o600 });
-  const config = { root, driveIdentity: { dev: st.dev, ino: st.ino }, instanceId: crypto.randomBytes(16).toString('hex'), origins: [ORIGIN], adminToken: crypto.randomBytes(32).toString('base64url'), identityKey: crypto.randomBytes(32).toString('base64'), cert, key, lanHost: ip };
+  const config = { root, locationSource: pickedSource, driveIdentity: { dev: st.dev, ino: st.ino }, instanceId: crypto.randomBytes(16).toString('hex'), origins: [ORIGIN], adminToken: crypto.randomBytes(32).toString('base64url'), identityKey: crypto.randomBytes(32).toString('base64'), cert, key, lanHost: ip };
   await fsp.writeFile(configPath, JSON.stringify(config, null, 2), { flag: 'wx', mode: 0o600 });
   return config;
 }
@@ -170,12 +170,13 @@ async function boot() {
 }
 
 async function locationInfo() {
-  if (!config?.root) return { path: null, connected: false };
+  if (!config?.root) return { path: null, source: 'chosen', connected: false };
   const problem = await rootProblem(config);
   const space = problem ? null : await driveInfo(config.root).catch(() => null);
-  return { path: config.root, connected: !problem, ...(problem ? { problem } : {}), ...(space ? { freeBytes: space.freeBytes, totalBytes: space.totalBytes } : {}) };
+  return { path: config.root, source: config.locationSource === 'auto' ? 'auto' : 'chosen', connected: !problem, ...(problem ? { problem } : {}), ...(space ? { freeBytes: space.freeBytes, totalBytes: space.totalBytes } : {}) };
 }
-function refreshTitle() { if (win) win.setTitle(config?.root ? `HomeSafe Vault — saving to ${config.root}` : 'HomeSafe Vault'); }
+// The backup location is shown inside the app (dashboard text), not in the window's title bar.
+function refreshTitle() { if (win) win.setTitle('HomeSafe Vault'); }
 async function showLocation() {
   const info = await locationInfo();
   const r = await dialog.showMessageBox(win, { type: 'info', title: 'HomeSafe Vault', message: 'Backups are saved here', noLink: true, buttons: ['OK', 'Open folder', 'Change location…'], defaultId: 0, cancelId: 0,
