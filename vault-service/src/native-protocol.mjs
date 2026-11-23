@@ -58,6 +58,8 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
  return {
   ownsRequest(route,v,req) { return Boolean(transfer && !transfer.failed && !transfer.finished && (route === '/v1/backup/chunk' ? req.headers['x-transfer-id'] === transfer.id && req.headers['x-transfer-token'] === transfer.token : route === '/v1/backup/finish' && v.transferId === transfer.id && v.token === transfer.token)); },
   active: () => Boolean(transfer && !transfer.failed && !transfer.finished),
+  /** Milliseconds since the running transfer last heard from the phone, or null when none is running. */
+  idleMs: () => (transfer && !transfer.failed && !transfer.finished ? Date.now() - transfer.lastActivity : null),
   activeIdentity: () => transfer && !transfer.failed && !transfer.finished ? transfer.identity : null,
   reset() { if (transfer && !transfer.failed && !transfer.finished) throw vaultError('transfer_active'); transfer = null; pending.clear(); challenges.clear(); },
   async handle(route, v, req) {
@@ -77,9 +79,17 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     const p = pending.get(v.requestId); pending.delete(v.requestId); if (!p || p.expiresAt <= Date.now()) throw vaultError('code_expired');
     nativeSignature(p.publicKey, v.signature, { requestId: v.requestId, challenge: p.challenge, profile: p.profile, phone: p.phone });
     await assertRoot(); const r = records().find(r => r.profile === p.profile && r.phone === p.phone);
-    if (r) { if (r.revoked) throw vaultError('phone_revoked'); if (r.deviceId !== p.deviceId || r.publicKey !== p.publicKey) throw new Error('Phone identity mismatch'); await verifyIdentity(root, key, identity(r)); }
+    if (r) {
+     if (r.revoked) throw vaultError('phone_revoked');
+     if (r.deviceId !== p.deviceId || r.publicKey !== p.publicKey) {
+      // The same account pairing a phone of the same name again (app reinstalled, new phone): the owner approved it on this Vault, so it replaces the old identity.
+      if (r.email !== p.email || records().some(o => o !== r && o.deviceId === p.deviceId)) throw new Error('Phone identity mismatch');
+      await adoptOrphanIdentity(root, key, identity(p)); await saveRecords(records().map(o => o === r ? { ...o, deviceId: p.deviceId, publicKey: p.publicKey } : o)); await audit('phone_repaired');
+     } else await verifyIdentity(root, key, identity(r));
+    }
     else { if (records().some(r => r.deviceId === p.deviceId)) throw new Error('Device already enrolled elsewhere');
-    // Reinstalled Vault (lost its key): a phone folder whose seal this Vault cannot read is claimed by the phone being paired now. A folder this Vault can read is never replaced.
+    // The phone folder exists but this Vault has no record of it (app data was reset or the key was lost): the phone being paired now takes it over. Another account's profile was already refused when the profile was selected.
+    if (records().some(o => o.profile.toLowerCase() === p.profile.toLowerCase() && o.email !== p.email)) throw new Error('Profile belongs to another account');
     try { await enrollIdentity(root, key, identity(p)); } catch (e) { if (!/already exists/.test(e.message)) throw e; await adoptOrphanIdentity(root, key, identity(p)); } await saveRecords([...records(), { email: p.email, profile: p.profile, phone: p.phone, deviceId: p.deviceId, publicKey: p.publicKey }]); }
     emit({ type: 'pairing_verified', profile: p.profile, phone: p.phone }); await audit('phone_paired'); return { connected: true, email: p.email, profile: p.profile, phone: p.phone };
    } catch (e) { emit({ type: 'pairing_failed' }); throw e; }

@@ -49,18 +49,14 @@ export async function enrollIdentity(root, key, identity) {
   const folder = await directory(profileFolder, identity.phone, true);
   await fs.writeFile(path.join(folder, '.homesafe-daemon-identity.json'), JSON.stringify(seal(key, identity)), { flag: 'wx', mode: 0o600 });
 }
-/** Claims a phone folder whose identity seal this Vault cannot open (its key was lost with a deleted app-data folder). Backups inside are kept; the old seal is renamed, not deleted. */
+/**
+ * Re-pairs a phone folder: the old identity seal (unreadable after a lost key, or readable but for an older install of the app) is renamed, not
+ * deleted, and a new seal for the phone being paired now is written. Callers decide whether this phone may take the folder over.
+ * Backups inside the folder are never touched.
+ */
 export async function adoptOrphanIdentity(root, key, identity) {
   const folder = await phoneFolder(root, identity.profile, identity.phone), file = path.join(folder, '.homesafe-daemon-identity.json');
-  const value = JSON.parse(await fs.readFile(file, 'utf8').catch(() => 'null'));
-  if (value) {
-    try {
-      const d = createDecipheriv('aes-256-gcm', key, Buffer.from(value.iv, 'base64'));
-      d.setAAD(Buffer.from(`${identity.profile}/${identity.phone}`)); d.setAuthTag(Buffer.from(value.tag, 'base64'));
-      d.update(Buffer.from(value.ciphertext, 'base64')); d.final();
-    } catch { await fs.rename(file, path.join(folder, `.homesafe-daemon-identity.replaced-${Date.now()}.json`)); value.orphan = true; }
-    if (!value.orphan) throw new Error('Phone folder already exists; it will not be replaced');
-  }
+  if (await fs.lstat(file).then(() => true, () => false)) await fs.rename(file, path.join(folder, `.homesafe-daemon-identity.replaced-${Date.now()}.json`));
   await fs.writeFile(file, JSON.stringify(seal(key, identity)), { flag: 'wx', mode: 0o600 });
 }
 export async function createTransfer(root, key, identity, input, now = new Date()) {

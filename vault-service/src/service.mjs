@@ -89,11 +89,13 @@ export async function createVaultService(config) {
         const v = JSON.parse(raw.toString());
         if (!authenticated) { if (v.type !== 'authenticate' || !equal(v.token, config.adminToken)) return ws.close(1008, 'Unauthorized'); authenticated = true; clearTimeout(timeout); send(ws, { type: 'service_ready' }); return; }
         if (v.type === 'list_library') { await assertRoot(); send(ws, await buildLibrary({ root, records, email: z.string().email().max(254).parse(v.email).toLowerCase(), profile: v.profile === undefined ? undefined : segment.parse(v.profile) })); return; }
-        if (v.type === 'select_destination' && v.email && records.some(r => r.profile.toLowerCase() === String(v.profile).toLowerCase() && r.email !== String(v.email).toLowerCase())) throw new Error('This profile belongs to another account');
+        if (v.type === 'select_destination' && v.email && records.some(r => r.profile.toLowerCase() === String(v.profile).toLowerCase() && r.email !== String(v.email).toLowerCase())) throw Object.assign(new Error('This profile belongs to another account'), { userMessage: 'This profile belongs to another account. Sign in with that account and its Authy code, or choose your own profile.' });
         if (v.type === 'select_destination' || v.type === 'reset') {
           if (v.type === 'select_destination' && selected?.profile === v.profile && selected?.phone === v.phone && (selected?.email ?? '') === (v.email ?? '').toLowerCase()) { monitors.add(ws); sendHistory(ws); for (const e of history) send(ws, e); if (pairing && !history.length) send(ws, codeEvent()); return; }
-          if (native.active()) throw new Error('A transfer is active');
-          if (v.type === 'select_destination' && [...monitors].some(m => m !== ws && m.readyState === WebSocket.OPEN)) throw new Error('Another dashboard owns the selected destination');
+          // A transfer the phone abandoned (it crashed or lost Wi-Fi for good) must not block the owner for the full 20 minutes.
+          if (native.active() && native.idleMs() > 120000) await native.fail(vaultError('phone_stopped'));
+          if (native.active()) throw Object.assign(new Error('A transfer is active'), { userMessage: 'A backup is still running for another phone. Wait for it to finish, or stop it on the phone, then try again.' });
+          if (v.type === 'select_destination' && [...monitors].some(m => m !== ws && m.readyState === WebSocket.OPEN)) throw Object.assign(new Error('Another dashboard owns the selected destination'), { userMessage: 'Another Vault window is already open on this PC. Close it, then try again.' });
           monitors.add(ws);
           native.reset();
           if (v.type === 'select_destination') selected = { profile: segment.parse(v.profile), phone: segment.parse(v.phone), ...(v.email ? { email: z.string().email().max(254).parse(v.email).toLowerCase() } : {}) };
@@ -115,7 +117,7 @@ export async function createVaultService(config) {
           const owner = native.activeIdentity(); if (owner?.profile === profile && owner.phone === phone) await native.fail();
           send(ws, { type: 'phone_revoked', profile, phone }); await audit('phone_revoked');
         }
-      }).catch(() => send(ws, { type: 'service_error', reason: 'Destination unavailable or transfer still active' })); });
+      }).catch(async e => { await logFailure('ws', e, undefined); send(ws, { type: 'service_error', reason: e?.userMessage ?? `Could not select that phone: ${String(e?.message ?? e).slice(0, 120)}` }); }); });
       ws.on('close', () => { clearTimeout(timeout); monitors.delete(ws); });
     });
   });

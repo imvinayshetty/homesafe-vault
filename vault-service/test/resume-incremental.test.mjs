@@ -129,3 +129,34 @@ test('status tells a phone which drive is connected and its free space, without 
     assert.ok(!JSON.stringify(s).includes('HomeSafeBckup'));
   } finally { await h.close(); }
 });
+
+test('selecting a destination explains why it was refused, and frees a transfer the phone abandoned', async () => {
+  const h = await harness();
+  try {
+    h.select(); await h.pair();
+    const t = await backup(h, { kind: 'Full', name: full, files: [A] });
+    h.ws.send(JSON.stringify({ type: 'select_destination', profile: 'Other', phone: 'Phone2', email: 'owner@example.test' }));
+    assert.match((await h.wait(e => e.type === 'service_error')).reason, /still running/);
+    assert.ok(t.started.transferId);
+  } finally { await h.close(); }
+});
+
+test('the same account can pair a phone of the same name again (app reinstalled); another account cannot', async () => {
+  const { generateKeyPairSync, sign, randomBytes } = await import('node:crypto');
+  const { canonical } = await import('../src/native-protocol.mjs');
+  const h = await harness();
+  try {
+    h.select(); await h.pair();
+    const again = async email => {
+      h.ws.send(JSON.stringify({ type: 'reset' })); await new Promise(r => setTimeout(r, 100)); h.events.length = 0; h.select(); 
+      const { privateKey, publicKey } = generateKeyPairSync('ed25519'), pub = publicKey.export({ type: 'spki', format: 'der' }).subarray(-32).toString('base64');
+      const sig = v => sign(null, Buffer.from(canonical(v)), privateKey).toString('base64'), deviceId = 'native-device-' + randomBytes(6).toString('hex');
+      const code = (await h.wait(e => e.type === 'pairing_code')).code, begin = { email, code, deviceId, publicKey: pub };
+      const offer = await h.post('/v1/pair/begin', { ...begin, signature: sig(begin) });
+      return h.post('/v1/pair/confirm', { requestId: offer.requestId, signature: sig({ requestId: offer.requestId, challenge: offer.challenge, profile: offer.profile, phone: offer.phone }) });
+    };
+    assert.equal((await again('owner@example.com')).connected, true);
+    const names = await fs.readdir(path.join(h.root, 'Owner', 'Pixel'));
+    assert.ok(names.some(n => n.includes('.replaced-')));
+  } finally { await h.close(); }
+});
