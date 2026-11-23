@@ -1,9 +1,107 @@
 {
-  "description": "HomeSafe phone protocol v1 canonical JSON. Flat object; keys sorted by Unicode code point (equivalently UTF-8 byte order, NOT UTF-16 or locale order); JSON.stringify with no whitespace; non-ASCII emitted as raw UTF-8, not \\u escapes; integers only.",
+  "version": 1,
+  "note": "Shared by the Vault and the HomeSafe phone app: keep this file byte-identical in both repos. Canonical = flat object, keys sorted by Unicode code point (UTF-8 byte order, NOT UTF-16 or locale order), JSON.stringify with no whitespace, non-ASCII emitted as raw UTF-8, integers only. Ed25519 signatures are over the UTF-8 canonical bytes.",
+  "seedHex": "0707070707070707070707070707070707070707070707070707070707070707",
+  "publicKey": "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=",
   "vectors": [
-    { "name": "key order", "input": { "phone": "Pixel", "deviceId": "abc", "Zeta": 1, "action": "catalog", "challenge": "c1" }, "canonical": "{\"Zeta\":1,\"action\":\"catalog\",\"challenge\":\"c1\",\"deviceId\":\"abc\",\"phone\":\"Pixel\"}" },
-    { "name": "Devanagari profile and phone", "input": { "profile": "विनय", "phone": "मेरा फ़ोन", "requestId": "r1", "challenge": "c2" }, "canonical": "{\"challenge\":\"c2\",\"phone\":\"मेरा फ़ोन\",\"profile\":\"विनय\",\"requestId\":\"r1\"}" },
-    { "name": "emoji name and astral key ordering", "input": { "😀": "astral", "｡": "halfwidth", "name": "Custom_Bckup_181126_🎉" }, "canonical": "{\"name\":\"Custom_Bckup_181126_🎉\",\"｡\":\"halfwidth\",\"😀\":\"astral\"}" },
-    { "name": "numbers", "input": { "files": 500000, "bytes": 1099511627776, "zero": 0, "kind": "Full" }, "canonical": "{\"bytes\":1099511627776,\"files\":500000,\"kind\":\"Full\",\"zero\":0}" }
+    {
+      "name": "pair_begin",
+      "input": {
+        "email": "me@home.com",
+        "code": "123456",
+        "deviceId": "android_0123456789abcdef",
+        "publicKey": "6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw="
+      },
+      "canonical": "{\"code\":\"123456\",\"deviceId\":\"android_0123456789abcdef\",\"email\":\"me@home.com\",\"publicKey\":\"6kpsY+KcUgq+9VB7Ey7F+ZVHdq6+vnuSQh7qaRRG0iw=\"}",
+      "signature": "L6juAqvQaG2KGLOHq3AfTyzB3PAQyiBuHq55hodw6Ln6TkeugDMbTrYj12rkf1vhewDLtSUhjynHCiKuQBvjAQ=="
+    },
+    {
+      "name": "pair_confirm",
+      "input": {
+        "requestId": "req_1",
+        "challenge": "chal_ABC-_",
+        "profile": "Vinay",
+        "phone": "Blue Pixel"
+      },
+      "canonical": "{\"challenge\":\"chal_ABC-_\",\"phone\":\"Blue Pixel\",\"profile\":\"Vinay\",\"requestId\":\"req_1\"}",
+      "signature": "WPlKGlgNa9lKpABzjfVk9G10f8R0vzYHOZ9TlV2q5rRJLIFAjhGzPhAhelyDza+DUszfRE2LMDUQ+4le3A4MCg=="
+    },
+    {
+      "name": "catalog",
+      "input": {
+        "deviceId": "ios_0123456789abcdef",
+        "challenge": "c1",
+        "action": "catalog"
+      },
+      "canonical": "{\"action\":\"catalog\",\"challenge\":\"c1\",\"deviceId\":\"ios_0123456789abcdef\"}",
+      "signature": "20qSg4A/1UJ4kpmZbcUZBZVr2yHUkUqbr35Y+hLN6Jj6KtT9VAXZwE7scMDIcRUt65sxFoSu20Yyh9kJeIZPBw=="
+    },
+    {
+      "name": "backup",
+      "input": {
+        "deviceId": "ios_0123456789abcdef",
+        "challenge": "c2",
+        "action": "backup",
+        "name": "Full_Bckup_181126",
+        "kind": "Full",
+        "files": 12001,
+        "bytes": 5368709120
+      },
+      "canonical": "{\"action\":\"backup\",\"bytes\":5368709120,\"challenge\":\"c2\",\"deviceId\":\"ios_0123456789abcdef\",\"files\":12001,\"kind\":\"Full\",\"name\":\"Full_Bckup_181126\"}",
+      "signature": "MiCPEcH3SzuhmYQ7VSvXRXGu1yJt1AG0B4Q6/ak1cHuY6EAyzckp6bz/ynpd8xz90v7wHh2vZWCXqgGdD7wDAw=="
+    },
+    {
+      "name": "escapes_and_unicode",
+      "input": {
+        "phone": "Café \"Tab\"\t\\ \u0001 नमस्ते 📱",
+        "profile": "Line\nBreak"
+      },
+      "canonical": "{\"phone\":\"Café \\\"Tab\\\"\\t\\\\ \\u0001 नमस्ते 📱\",\"profile\":\"Line\\nBreak\"}",
+      "signature": "URWXZG4bhZkLh0TY3nCPiY3GmyI2hvsi0VPgMgf6U31zFPpJpX9KvnOTk3CJYQLxoYPA8+d2T6nIJjYy4Mn+BQ=="
+    },
+    {
+      "name": "key order",
+      "input": {
+        "phone": "Pixel",
+        "deviceId": "abc",
+        "Zeta": 1,
+        "action": "catalog",
+        "challenge": "c1"
+      },
+      "canonical": "{\"Zeta\":1,\"action\":\"catalog\",\"challenge\":\"c1\",\"deviceId\":\"abc\",\"phone\":\"Pixel\"}",
+      "signature": "dyEFjD1CzS+mENpQFkITE4GmTZRV0ONAqaxNO4Bqn0KIX25z+V5mInIUWdkZWy+YeTD1hrivuuYfCGxs0IU3Bg=="
+    },
+    {
+      "name": "Devanagari profile and phone",
+      "input": {
+        "profile": "विनय",
+        "phone": "मेरा फ़ोन",
+        "requestId": "r1",
+        "challenge": "c2"
+      },
+      "canonical": "{\"challenge\":\"c2\",\"phone\":\"मेरा फ़ोन\",\"profile\":\"विनय\",\"requestId\":\"r1\"}",
+      "signature": "vP1GQ00YhTIOYWycq7PdMjwdQFkyO/HeSMYnjTjdAWI14860CE7v9cHkPeM77W3Rxz3fI3puArx5RdM7Ukv5CA=="
+    },
+    {
+      "name": "emoji name and astral key ordering",
+      "input": {
+        "😀": "astral",
+        "｡": "halfwidth",
+        "name": "Custom_Bckup_181126_🎉"
+      },
+      "canonical": "{\"name\":\"Custom_Bckup_181126_🎉\",\"｡\":\"halfwidth\",\"😀\":\"astral\"}",
+      "signature": "fOMqoiJQKLBEDG2g1j7b3qgOyGI5TSJfaat4SSmFEVqPCcHMCIdhtTz8c19P+uOLhhswUmyJb9LlIMBE/df0Dg=="
+    },
+    {
+      "name": "numbers",
+      "input": {
+        "files": 500000,
+        "bytes": 1099511627776,
+        "zero": 0,
+        "kind": "Full"
+      },
+      "canonical": "{\"bytes\":1099511627776,\"files\":500000,\"kind\":\"Full\",\"zero\":0}",
+      "signature": "0tRqNmA2n/++0506wYoz8UX7YEZ8Z93tG7GjAgy8uxU5ZRKP7w0PEd4J5sTKjbQmQd9KWmLUW7yT6FR7B164Dw=="
+    }
   ]
 }
