@@ -113,6 +113,8 @@ Send pages to `/v1/backup/files` as `{transferId, token, offset, files}` **befor
 Chunks and finish are refused with `too_many_files` until all declared entries are accepted and their sizes match the signed total. This preflight rejection writes no payload, does not mark a backup complete, and leaves the transfer available for valid pages and retry. Other chunk/write failures still fail the transfer. Chunks must arrive at the exact next byte offset with a matching SHA-256; existing files and backups are never overwritten. Names default to `Full_Bckup_DDMMYY` / `Custom_Bckup_DDMMYY` (Vault's local date); same-date backups need a unique suffix. `/v1/pair/begin` is limited to five attempts per IP per minute. Requests with an `Origin` header are rejected. `GET /v1/info` returns `{name, version:1}`.
 
 ### Errors
+After all chunks arrive, `/v1/backup/finish` rereads every file and compares size and SHA-256 with the received data; any mismatch returns `integrity_mismatch` and the backup stays incomplete. The dashboard socket receives `transfer_verifying {checkedFiles,total}` during the check and `transfer_history {backups}` snapshots scoped to the selected email/profile/phone (latest 100; no email, tokens or codes). Monitors may send `{type:"verify_backup",id}` to reverify a completed backup read-only; the first 50 mismatched paths are reported with the full count. History is stored in the private state folder (`transfer-history.json`), never the drive or cloud.
+
 Every failure returns `{ "error": "<fixed message>", "code": "<code>" }`. Messages never contain file names, emails, profile or phone names.
 
 | code | HTTP | meaning |
