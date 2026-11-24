@@ -38,6 +38,17 @@ export async function externalDriveRoots(platform = process.platform) {
   return mounts;
 }
 
+/**
+ * True when the backup folder is on a drive other than the computer's own system drive (a USB or other external disk).
+ * Windows: any drive letter except the system drive. macOS: a volume under /Volumes other than the boot volume. Linux: under /media, /mnt or /run/media.
+ */
+export async function isExternalRoot(root, platform = process.platform) {
+  const real = await fs.realpath(root).catch(() => path.resolve(root));
+  if (platform === 'win32') return real.slice(0, 2).toUpperCase() !== (process.env.SystemDrive || 'C:').toUpperCase();
+  if (platform === 'darwin') { const boot = await fs.realpath('/'); const m = /^\/Volumes\/[^/]+/.exec(real); return !!m && (await fs.realpath(m[0]).catch(() => boot)) !== boot; }
+  return ['/media/', '/mnt/', '/run/media/'].some(p => real.startsWith(p));
+}
+
 /** Existing HomeSafeBckup folder wins; otherwise the external drive with the most free space. */
 export async function findBackupRoot(drives) {
   for (const d of drives) { const p = path.join(d.root, 'HomeSafeBckup'); if ((await fs.stat(p).catch(() => null))?.isDirectory()) return { root: p, existing: true }; }

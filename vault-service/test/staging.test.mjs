@@ -6,9 +6,9 @@ import { createHash } from 'node:crypto';
 import { harness, today } from './helpers.mjs';
 
 const sha = b => createHash('sha256').update(b).digest('hex');
-async function backup(h, { name, files }) {
+async function backup(h, { name, files }, mode = 'staged') {
   const bytes = files.reduce((n, f) => n + f.data.length, 0), challenge = await h.challenge();
-  const started = await h.post('/v1/backup/start', { deviceId: h.deviceId, challenge, signature: h.signature({ deviceId: h.deviceId, challenge, action: 'backup', name, kind: 'Full', files: files.length, bytes }), name, kind: 'Full', files: files.map(f => ({ path: f.path, bytes: f.data.length })) });
+  const started = await h.post('/v1/backup/start', { deviceId: h.deviceId, challenge, signature: h.signature({ deviceId: h.deviceId, challenge, action: 'backup', name, kind: 'Full', files: files.length, bytes }), name, kind: 'Full', mode, files: files.map(f => ({ path: f.path, bytes: f.data.length })) });
   const chunk = (index, offset, data) => fetch(`${h.base}/v1/backup/chunk`, { method: 'POST', body: data, headers: { 'X-Transfer-Id': started.transferId, 'X-Transfer-Token': started.token, 'X-File-Index': String(index), 'X-Offset': String(offset), 'X-Sha256': sha(data), 'Content-Type': 'application/octet-stream' } });
   return { started, chunk, finish: () => h.post('/v1/backup/finish', { transferId: started.transferId, token: started.token }) };
 }
@@ -16,7 +16,7 @@ const name = `Full_Bckup_${today()}`;
 const A = { path: 'DCIM/a.jpg', data: Buffer.from('aaaaaa') }, B = { path: 'Docs/b.txt', data: Buffer.from('bbbb') }, E = { path: 'empty.bin', data: Buffer.alloc(0) };
 
 test('with staging, the phone is finished once files reach the PC; the drive copy is verified and the staged copy removed', async () => {
-  const h = await harness({ stagingAnyDisk: true });
+  const h = await harness({ rootExternal: true, stagingAnyDisk: true });
   try {
     h.select(); await h.pair();
     const t = await backup(h, { name, files: [A, B, E] });
@@ -38,7 +38,7 @@ test('with staging, the phone is finished once files reach the PC; the drive cop
 });
 
 test('speed test: data is discarded and the Vault reports drive and staging write speeds', async () => {
-  const h = await harness({ stagingAnyDisk: true });
+  const h = await harness({ rootExternal: true, stagingAnyDisk: true });
   try {
     h.select(); await h.pair();
     const challenge = await h.challenge();
@@ -52,15 +52,15 @@ test('speed test: data is discarded and the Vault reports drive and staging writ
   } finally { await h.close(); }
 });
 
-const startPlain = async (h, files) => {
+const startPlain = async (h, files, mode = 'staged') => {
   const bytes = files.reduce((n, f) => n + f.data.length, 0), challenge = await h.challenge();
-  return h.call('/v1/backup/start', { deviceId: h.deviceId, challenge, signature: h.signature({ deviceId: h.deviceId, challenge, action: 'backup', name, kind: 'Full', files: files.length, bytes }), name, kind: 'Full', files: files.map(f => ({ path: f.path, bytes: f.data.length })) });
+  return h.call('/v1/backup/start', { deviceId: h.deviceId, challenge, signature: h.signature({ deviceId: h.deviceId, challenge, action: 'backup', name, kind: 'Full', files: files.length, bytes }), name, kind: 'Full', ...(mode ? { mode } : {}), files: files.map(f => ({ path: f.path, bytes: f.data.length })) });
 };
 const adminSend = (h, msg) => h.ws.send(JSON.stringify(msg));
 
 test('default staging folder without room for the backup plus 2 GB: the owner is asked for a HomeSafeTemp folder, nothing is created on the drive, and the choice is used', async () => {
   const GB = 1024 ** 3, roomy = { v: false };
-  const h = await harness({ stagingAnyDisk: true, stagingFreeBytes: async dir => (roomy.v && dir.includes('HomeSafeTemp') ? 500 * GB : 2 * GB + 5) });
+  const h = await harness({ rootExternal: true, stagingAnyDisk: true, stagingFreeBytes: async dir => (roomy.v && dir.includes('HomeSafeTemp') ? 500 * GB : 2 * GB + 5) });
   try {
     h.select(); await h.pair();
     // 11 bytes + 2 GB needed, 2 GB + 5 free: refused.
@@ -86,14 +86,28 @@ test('default staging folder without room for the backup plus 2 GB: the owner is
   } finally { await h.close(); }
 });
 
-test('"save directly to the drive" skips staging for good', async () => {
-  const h = await harness({ stagingAnyDisk: true, stagingFreeBytes: async () => 0 });
+test('the owner chooses per backup: direct goes straight to the drive, staged is refused unless the drive is external, and the phone can check readiness first', async () => {
+  const GB = 1024 ** 3;
+  const h = await harness({ rootExternal: true, stagingAnyDisk: true, stagingFreeBytes: async () => 2 * GB + 5 });
   try {
     h.select(); await h.pair();
-    assert.equal((await startPlain(h, [A])).status, 507);
-    adminSend(h, { type: 'set_staging', direct: true }); await h.wait(e => e.type === 'staging_ready');
-    const t = await backup(h, { name, files: [A] });
+    // The phone asks before starting: external drive, and staging is not ready because the default folder lacks room.
+    const status = await h.post('/v1/status', { bytes: 1000, ask: true });
+    assert.equal(status.external, true); assert.equal(status.staging.available, true); assert.equal(status.staging.ready, false); assert.equal(status.staging.needBytes, 1000 + 2 * GB);
+    assert.equal((await h.wait(e => e.type === 'staging_needed')).needBytes, 1000 + 2 * GB);
+    assert.equal((await h.post('/v1/status', { bytes: 5 })).staging.ready, true);
+    // Option 2 (direct) works even though staging is not ready: no staging folder is touched and the phone waits for the drive.
+    const t = await backup(h, { name, files: [A] }, 'direct');
     assert.equal((await t.chunk(0, 0, A.data)).status, 200);
     assert.equal((await t.finish()).staged, undefined);
+    await assert.rejects(fs.stat(path.join(h.dir, 'staging', t.started.transferId)));
   } finally { await h.close(); }
+  const plain = await harness({ stagingAnyDisk: true });
+  try {
+    plain.select(); await plain.pair();
+    const status = await plain.post('/v1/status', {});
+    assert.equal(status.external, false); assert.equal(status.staging, undefined);
+    const refused = await startPlain(plain, [A], 'staged'); assert.equal(refused.body.code, 'staging_unavailable');
+    assert.equal((await startPlain(plain, [A], 'bogus')).status, 400);
+  } finally { await plain.close(); }
 });

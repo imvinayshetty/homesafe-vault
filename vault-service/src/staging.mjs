@@ -44,7 +44,7 @@ export async function createStaging({ dir, stateDir, enabled = true, allowSameDi
   let stopped = false, chain = Promise.resolve(); const running = new Set();
   const free = freeBytes ?? (async d => { const s = await fs.statfs(d); return s.bavail * s.bsize; });
   const prefsFile = stateDir ? path.join(stateDir, 'staging.json') : null;
-  // The owner's choice: a HomeSafeTemp folder to stage into, or "save directly to the drive".
+  // The owner's choice of a HomeSafeTemp folder to stage into.
   let prefs = prefsFile ? await fs.readFile(prefsFile, 'utf8').then(JSON.parse).catch(() => ({})) : {};
   if (typeof prefs !== 'object' || prefs === null) prefs = {};
   const savePrefs = async () => { if (!prefsFile) return; await fs.writeFile(`${prefsFile}.tmp`, JSON.stringify(prefs), { mode: 0o600 }); await fs.rename(`${prefsFile}.tmp`, prefsFile); };
@@ -60,19 +60,38 @@ export async function createStaging({ dir, stateDir, enabled = true, allowSameDi
   }
 
   /**
-   * Where this backup's files will be received first. Returns { base } or null (save straight to the drive).
-   * Throws, and asks the owner on the Vault screen, when the default folder lacks room for the backup plus 2 GB and no HomeSafeTemp folder fits.
+   * What staging can do for a backup of this size: 'ready' (a folder with room exists), 'needs_folder' (the default folder lacks backup size + 2 GB and no HomeSafeTemp folder fits),
+   * or 'off' (staging is unavailable, or would gain nothing because the default folder is on the backup drive's own disk).
    */
-  async function plan(declaredBytes) {
-    if (!enabled || stopped || prefs.direct) return null;
+  async function decide(declaredBytes) {
+    if (!enabled || stopped) return { kind: 'off' };
     const need = declaredBytes + STAGING_MARGIN_BYTES; lastNeed = need;
     const fallback = await check(dir, need);
-    if (fallback === 'ok') return { base: dir };
+    if (fallback === 'ok') return { kind: 'ready', base: dir, need };
     const temp = prefs.tempDir ? await check(prefs.tempDir, need) : null;
-    if (temp === 'ok') return { base: prefs.tempDir };
-    if (fallback === 'same' && !prefs.tempDir) return null;
-    emit({ type: 'staging_needed', needBytes: need, freeBytes: await free(dir).catch(() => 0) });
-    throw Object.assign(new Error('staging_space'), { vaultCode: 'staging_space' });
+    if (temp === 'ok') return { kind: 'ready', base: prefs.tempDir, need };
+    if (fallback === 'same' && !prefs.tempDir) return { kind: 'off' };
+    return { kind: 'needs_folder', need, free: await free(dir).catch(() => 0) };
+  }
+  let lastAsk = 0;
+  const ask = d => { emit({ type: 'staging_needed', needBytes: d.need, freeBytes: d.free }); lastAsk = Date.now(); };
+
+  /** Answer for the phone before it starts: can this backup be received on the computer first? With ask, also asks the owner on the Vault screen. */
+  async function readiness(declaredBytes, wantAsk = false) {
+    const d = await decide(declaredBytes);
+    if (d.kind === 'needs_folder' && wantAsk && Date.now() - lastAsk > 5000) ask(d);
+    return d.kind === 'off' ? { available: false, ready: false } : d.kind === 'ready' ? { available: true, ready: true, needBytes: d.need } : { available: true, ready: false, needBytes: d.need, freeBytes: d.free };
+  }
+
+  /**
+   * Where this backup's files will be received first: { base }. Only called when the owner chose the fast option on the phone.
+   * Throws (and asks on the Vault screen) when no folder has room.
+   */
+  async function plan(declaredBytes) {
+    const d = await decide(declaredBytes);
+    if (d.kind === 'ready') return { base: d.base };
+    if (d.kind === 'needs_folder') { ask(d); throw Object.assign(new Error('staging_space'), { vaultCode: 'staging_space' }); }
+    throw Object.assign(new Error('staging_unavailable'), { vaultCode: 'staging_unavailable' });
   }
 
   /** Creates this transfer's folder inside the planned staging folder. */
@@ -92,8 +111,6 @@ export async function createStaging({ dir, stateDir, enabled = true, allowSameDi
     prefs = { tempDir: real }; await savePrefs();
     emit({ type: 'staging_ready' }); void resumePending();
   }
-  /** The owner chose to save straight to the backup drive. */
-  async function useDirect() { prefs = { ...prefs, direct: true }; await savePrefs(); emit({ type: 'staging_ready' }); }
 
   /** Called when the phone has sent everything: remember what has to be saved, then save it in the background. */
   async function enqueue(job) {
@@ -194,5 +211,5 @@ export async function createStaging({ dir, stateDir, enabled = true, allowSameDi
     return { driveBytesPerSecond: drive, stagingBytesPerSecond: staging, staging: enabled && (await fs.stat(dir).then(s => s.dev !== rootStat.dev || allowSameDisk).catch(() => false)) };
   }
 
-  return { plan, begin, choose, useDirect, enqueue, resumePending, diskTest, stop() { stopped = true; }, get enabled() { return enabled; } };
+  return { plan, readiness, begin, choose, enqueue, resumePending, diskTest, stop() { stopped = true; }, get enabled() { return enabled; } };
 }

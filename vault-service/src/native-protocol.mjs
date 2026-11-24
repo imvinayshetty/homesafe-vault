@@ -18,6 +18,7 @@ export const ERROR_MESSAGES = {
   rate_limited: 'Too many attempts; wait one minute.',
   invalid_request: 'Request rejected; check the signature and request fields.',
   phone_stopped: 'The phone stopped the backup.',
+  staging_unavailable: 'Saving to the computer first is not available for this drive. Choose the direct option instead.',
   staging_space: 'Your computer needs room to receive this backup first. Open HomeSafe Vault on the computer and choose a HomeSafeTemp folder (or save straight to the drive), then try again.',
   vault_cancelled: 'The backup was cancelled on the Vault.',
   transfer_stopped: 'The Vault has stopped this backup.',
@@ -48,7 +49,7 @@ export const speedOf = (t, now = Date.now()) => { const s = (t.samples ??= []); 
 export const TRANSFER_IDLE_MS = 20 * 60 * 1000;
 const BASELINE_PAGE = 5000, BASELINE_TTL_MS = 10 * 60 * 1000;
 const notBefore = (e, retryable) => Object.assign(e instanceof Error ? e : new Error(String(e)), { retryable });
-export function createNativeProtocol({ root, key, selected, pairing, consumeCode, records, saveRecords, emit, audit, assertRoot, validCode, history, staging = null }) {
+export function createNativeProtocol({ root, key, selected, pairing, consumeCode, records, saveRecords, emit, audit, assertRoot, validCode, history, staging = null, external = false }) {
  const pending = new Map(), challenges = new Map(), baselines = new Map(), speedTests = new Map(); let transfer = null;
  const random = () => randomBytes(32).toString('base64url');
  const identity = r => ({ profile: r.profile, phone: r.phone, publicKey: r.publicKey });
@@ -111,6 +112,7 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
    if (route === '/v1/backup/start') {
     // Two modes: inline manifest (files non-empty, no fileCount) or paged (files: [] with fileCount + bytes).
     if (!Array.isArray(v.files) || v.files.length > MANIFEST_PAGE_LIMIT) throw vaultError('too_many_files');
+    if (v.mode !== undefined && v.mode !== 'staged' && v.mode !== 'direct') throw vaultError('invalid_request');
     const paged = v.files.length === 0;
     if (!paged && v.fileCount !== undefined) throw vaultError('invalid_request');
     if (paged && (!Number.isInteger(v.fileCount) || v.fileCount < 1)) throw vaultError('invalid_request');
@@ -121,7 +123,7 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     const r = proof(v, 'backup', { name: v.name, kind: v.kind, files: totalFiles, bytes: totalBytes });
     if (transfer && !transfer.failed && !transfer.finished) throw vaultError('transfer_active'); await assertRoot();
     // Decided before anything is created on the drive, so a refused start leaves no empty backup folder behind.
-    const stagePlan = staging ? await staging.plan(totalBytes) : null;
+    const stagePlan = v.mode === 'staged' && staging && external ? await staging.plan(totalBytes) : v.mode === 'staged' ? (() => { throw vaultError('staging_unavailable'); })() : null;
     const t = await createTransfer(root, key, identity(r), { kind: v.kind, name: v.name, ...(v.basedOn !== undefined ? { basedOn: v.basedOn } : {}), declaredBytes: totalBytes, paged, files: page.map(f => ({ ...f, sha256: '0'.repeat(64) })) });
     transfer = { ...t, id: random(), token: random(), deviceId: r.deviceId, identity: identity(r), totalFiles, totalBytes, receivedBytes: 0, seen: new Set(t.files.map(f => f.path.toLowerCase())), offsets: new Map(), hashes: new Map(), failed: false, lastActivity: Date.now() };
     if (stagePlan) transfer.stage = await staging.begin(stagePlan, transfer.id);
@@ -217,7 +219,9 @@ export function createNativeProtocol({ root, key, selected, pairing, consumeCode
     // Which drive this Vault saves to and how much room is left. Drive name and sizes only: no folder path, no profile or phone names.
     const parent = path.dirname(root); let connected = true; try { await assertRoot(); } catch { connected = false; }
     const space = connected ? await fs.statfs(root).catch(() => null) : null;
-    return { connected, driveName: path.basename(parent) || parent, ...(space ? { freeBytes: space.bavail * space.bsize, totalBytes: space.blocks * space.bsize } : {}) };
+    const bytes = Number.isSafeInteger(v.bytes) && v.bytes >= 0 ? v.bytes : 0;
+    // external: the phone offers "fast, then save to the drive in the background" only for external drives.
+    return { connected, driveName: path.basename(parent) || parent, external, ...(space ? { freeBytes: space.bavail * space.bsize, totalBytes: space.blocks * space.bsize } : {}), ...(external && staging ? { staging: await staging.readiness(bytes, v.ask === true) } : {}) };
    }
    if (route === '/v1/backup/abort') {
     // The phone gave up (a fatal error or the user cancelled): stop at once instead of waiting for the idle timeout.

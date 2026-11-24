@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { segment } from './storage.mjs';
 import { buildLibrary } from './library.mjs';
 import { mirrorPhones, readRecovery, writeVault } from './recovery.mjs';
+import { isExternalRoot } from './discovery.mjs';
 import { createStaging } from './staging.mjs';
 import { createNativeProtocol, vaultError, errorCode, ERROR_MESSAGES } from './native-protocol.mjs';
 import { createTransferHistory } from './transfer-history.mjs';
@@ -63,8 +64,9 @@ export async function createVaultService(config) {
   const body = async req => { let size = 0, chunks = []; for await (const c of req) { size += c.length; if (size > 2 * 1024 * 1024) throw new Error('Request too large'); chunks.push(c); } return JSON.parse(Buffer.concat(chunks).toString()); };
   const sendHistory = ws => send(ws, { type: 'transfer_history', backups: transferHistory.list(selected) });
   const transferHistory = await createTransferHistory({ stateDir: config.stateDir, root, key, assertRoot, onChange: () => { for (const ws of monitors) sendHistory(ws); } });
+  const external = config.rootExternal ?? await isExternalRoot(root).catch(() => false);
   const staging = await createStaging({ dir: config.stagingDir ?? path.join(config.stateDir, 'staging'), stateDir: config.stateDir, freeBytes: config.stagingFreeBytes, enabled: config.staging !== false, allowSameDisk: config.stagingAnyDisk === true, root, rootStat, key, assertRoot, history: transferHistory, emit, audit, log: (route, e) => logFailure(route, e, {}) });
-  const native = createNativeProtocol({ root, key, selected: () => selected, pairing: () => pairing, consumeCode: () => { pairing = null; }, records: () => records, saveRecords: async next => { await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); records = next; await mirrorPhones(root, next); }, emit, audit, assertRoot, validCode, history: transferHistory, staging });
+  const native = createNativeProtocol({ root, key, selected: () => selected, pairing: () => pairing, consumeCode: () => { pairing = null; }, records: () => records, saveRecords: async next => { await fs.writeFile(`${recordsFile}.tmp`, JSON.stringify(next), { mode: 0o600 }); await fs.rename(`${recordsFile}.tmp`, recordsFile); records = next; await mirrorPhones(root, next); }, emit, audit, assertRoot, validCode, history: transferHistory, staging, external });
   const reject = (res, e) => { const code = errorCode(e); reply(res, STATUS[code] ?? 400, { error: ERROR_MESSAGES[code], code }); };
   const ROUTES = ['/v1/pair/begin', '/v1/pair/confirm', '/v1/device/challenge', '/v1/backups', '/v1/backup/start', '/v1/backup/files', '/v1/backup/chunk', '/v1/backup/resume', '/v1/backup/baseline', '/v1/status', '/v1/backup/abort', '/v1/backup/problem', '/v1/backup/replace', '/v1/backup/finish', '/v1/speedtest/start', '/v1/speedtest/chunk', '/v1/speedtest/finish'];
   const handler = (req, res) => {
@@ -102,7 +104,7 @@ export async function createVaultService(config) {
           const rec = await readRecovery(root);
           send(ws, { type: 'recovery_status', phones: rec?.phones.length ?? 0, namesSaved: Boolean(rec), fullEnabled: Boolean(rec?.vault) }); return;
         }
-        if (v.type === 'set_staging') { if (v.direct === true) await staging.useDirect(); else await staging.choose(v.path); return; }
+        if (v.type === 'set_staging') { await staging.choose(v.path); return; }
         if (v.type === 'disk_test') {
           if (native.active()) throw Object.assign(new Error('A transfer is active'), { userMessage: 'Wait for the running backup to finish, then test the drive speed.' });
           await assertRoot(); send(ws, { type: 'disk_test_result', ...(await staging.diskTest()) }); return;
